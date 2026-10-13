@@ -2,9 +2,9 @@
 //! the pixels each cover covers.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use egui::load::{
     Bytes, BytesLoadResult, BytesLoader, BytesPoll, ImageLoadResult, ImageLoader, ImagePoll,
@@ -35,6 +35,20 @@ const MAX_ART_BYTES: usize = 8 * 1024 * 1024;
 /// paint, not the clock, so copies painted together stay together however
 /// long the window then sits idle.
 const SUPERSEDED: Duration = Duration::from_secs(5);
+
+/// The most the artwork folder keeps on disk. Each launch removes the
+/// least recently used files above it, down to [`PRUNE_TARGET_PERCENT`] of it.
+const DISK_CACHE_CAP: u64 = 512 * 1024 * 1024;
+const PRUNE_TARGET_PERCENT: u64 = 80;
+
+/// A `.part` file this old is a failed write; a younger one may be a download
+/// being saved, so it is left alone.
+const PART_GRACE: Duration = Duration::from_secs(10 * 60);
+
+/// A cached file read more recently than this is not touched again, so a
+/// read costs a write only once a day. File times, not access times, order
+/// the pruning: access times are unreliable on NTFS, relatime and APFS.
+const TOUCH_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// How covers are sampled. Each is scaled to the pixels it covers before it
 /// reaches the GPU, but sizes come in steps and a cover can be drawn smaller
@@ -139,6 +153,10 @@ pub struct ArtLoader {
 impl ArtLoader {
     pub fn new(http: impl Into<Http>, runtime: tokio::runtime::Handle, cache_dir: PathBuf) -> Self {
         let _ = std::fs::create_dir_all(&cache_dir);
+        let pruned = cache_dir.clone();
+        runtime.spawn_blocking(move || {
+            prune_disk_cache(&pruned, DISK_CACHE_CAP, SystemTime::now());
+        });
         Self {
             inner: Arc::new(Inner {
                 entries: Mutex::new(HashMap::new()),
@@ -356,6 +374,69 @@ impl ArtLoader {
     }
 }
 
+/// Deletes the stale `.part` files in `dir`, then, if the rest add up to more
+/// than `cap` bytes, the files modified longest ago until they come to
+/// `PRUNE_TARGET_PERCENT` of it. Only plain files directly in `dir` are
+/// touched, never what a symlink points to. A file that cannot be read or
+/// removed is skipped.
+fn prune_disk_cache(dir: &Path, cap: u64, now: SystemTime) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        // `DirEntry` metadata describes a symlink itself, not its target.
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let modified = meta.modified().ok();
+        if path.extension().is_some_and(|ext| ext == "part") {
+            let age = modified.and_then(|at| now.duration_since(at).ok());
+            if age.is_some_and(|age| age >= PART_GRACE)
+                && let Err(error) = std::fs::remove_file(&path)
+            {
+                log::debug!("artwork cache: cannot remove {}: {error}", path.display());
+            }
+            continue;
+        }
+        total += meta.len();
+        files.push((modified.unwrap_or(SystemTime::UNIX_EPOCH), meta.len(), path));
+    }
+    if total <= cap {
+        return;
+    }
+    let target = cap / 100 * PRUNE_TARGET_PERCENT;
+    files.sort_by_key(|(modified, ..)| *modified);
+    for (_, len, path) in files {
+        if total <= target {
+            break;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => total -= len,
+            Err(error) => log::debug!("artwork cache: cannot remove {}: {error}", path.display()),
+        }
+    }
+}
+
+/// Marks a cached file as used now, if it was last modified over
+/// [`TOUCH_AFTER`] before `now`.
+fn refresh_mtime(path: &Path, now: SystemTime) {
+    let stale = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .is_ok_and(|at| now.duration_since(at).is_ok_and(|age| age > TOUCH_AFTER));
+    if stale
+        && let Err(error) = std::fs::File::options()
+            .write(true)
+            .open(path)
+            .and_then(|file| file.set_modified(now))
+    {
+        log::debug!("artwork cache: cannot refresh {}: {error}", path.display());
+    }
+}
+
 /// Takes out of `textures` the copies of a cover last painted more than
 /// [`SUPERSEDED`] before another copy of it, and answers their URIs. A cover
 /// with a single copy is left to the memory budget.
@@ -441,7 +522,13 @@ impl Inner {
         let path = self.cache_path(url);
         let cached = tokio::task::spawn_blocking({
             let path = path.clone();
-            move || std::fs::read(path).ok()
+            move || {
+                let bytes = std::fs::read(&path).ok();
+                if bytes.is_some() {
+                    refresh_mtime(&path, SystemTime::now());
+                }
+                bytes
+            }
         })
         .await
         .ok()
@@ -1201,6 +1288,89 @@ mod tests {
         })
         .await
         .expect("the background writer completes while its runtime is alive");
+    }
+
+    fn cache_test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("spotifast-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cache_file(dir: &Path, name: &str, len: usize, age: Duration, now: SystemTime) {
+        let file = std::fs::File::create(dir.join(name)).unwrap();
+        file.set_len(len as u64).unwrap();
+        file.set_modified(now - age).unwrap();
+    }
+
+    #[test]
+    fn prune_removes_oldest_first_down_to_eighty_percent() {
+        let dir = cache_test_dir("prune-oldest");
+        let now = SystemTime::now();
+        for (name, days) in [("a", 4), ("b", 3), ("c", 2), ("d", 1)] {
+            cache_file(&dir, name, 30, Duration::from_secs(days * 86_400), now);
+        }
+        // 120 bytes against a cap of 100: down to 80, so a and b go.
+        prune_disk_cache(&dir, 100, now);
+        let mut left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["c", "d"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prune_is_a_no_op_under_the_cap() {
+        let dir = cache_test_dir("prune-noop");
+        let now = SystemTime::now();
+        cache_file(&dir, "a", 50, Duration::from_secs(86_400), now);
+        cache_file(&dir, "b", 50, Duration::from_secs(1), now);
+        prune_disk_cache(&dir, 100, now);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prune_removes_stale_part_files_and_keeps_fresh_ones() {
+        let dir = cache_test_dir("prune-part");
+        let now = SystemTime::now();
+        cache_file(
+            &dir,
+            "stale.part",
+            10,
+            PART_GRACE + Duration::from_secs(1),
+            now,
+        );
+        cache_file(&dir, "fresh.part", 10, Duration::from_secs(5), now);
+        cache_file(&dir, "cover", 10, Duration::from_secs(5), now);
+        prune_disk_cache(&dir, 1000, now);
+        assert!(!dir.join("stale.part").exists());
+        assert!(dir.join("fresh.part").exists());
+        assert!(dir.join("cover").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mtime_is_refreshed_only_when_older_than_a_day() {
+        let dir = cache_test_dir("touch");
+        let now = SystemTime::now();
+        let age =
+            |name: &str| now.duration_since(dir.join(name).metadata().unwrap().modified().unwrap());
+        cache_file(&dir, "old", 1, TOUCH_AFTER + Duration::from_secs(60), now);
+        cache_file(
+            &dir,
+            "recent",
+            1,
+            TOUCH_AFTER - Duration::from_secs(60),
+            now,
+        );
+        refresh_mtime(&dir.join("old"), now);
+        refresh_mtime(&dir.join("recent"), now);
+        assert!(age("old").unwrap_or_default() < Duration::from_secs(1));
+        assert!(age("recent").unwrap() > TOUCH_AFTER - Duration::from_secs(120));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

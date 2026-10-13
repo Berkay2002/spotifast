@@ -138,6 +138,12 @@ cache write does not prevent the downloaded image from being displayed.
 Softened previews reuse egui's decoded artwork after its encoded bytes have
 been released, without repeatedly reading the disk cache or downloading again.
 
+The artwork cache is capped at 512 MiB, separately from the audio cache budget.
+Once per launch, in the background, Spotifast deletes leftover `.part` files
+older than ten minutes and, if the folder is over the cap, the least recently
+used covers until it is at 80% of it. A cover read from disk has its file time
+refreshed at most once a day, so the covers you keep seeing stay.
+
 The following Liked Songs caching behavior is available since 0.9.0.
 
 Liked Songs metadata is stored separately under `liked-songs/` in the cache
