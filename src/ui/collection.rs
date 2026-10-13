@@ -634,6 +634,7 @@ pub fn table(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
 }
 
 fn table_contents(app: &mut App, ui: &mut egui::Ui, table: Table<'_>) {
+    crate::profiling::profile_scope!("collection::table_contents");
     let palette = app.palette;
     let locale = app.locale;
     let needle = table.filter.trim().to_lowercase();

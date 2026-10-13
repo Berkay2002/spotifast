@@ -1978,6 +1978,7 @@ impl App {
     }
 
     fn handle_backend_events(&mut self, events: Vec<Event>) {
+        crate::profiling::profile_scope!("handle_backend_events");
         for event in events {
             // Offline, as in demo mode, only colours read from cover art and
             // local update checks come through.
@@ -3106,6 +3107,7 @@ impl App {
     }
 
     fn tick(&mut self, ctx: &egui::Context) {
+        crate::profiling::profile_scope!("tick");
         self.poll_custom_themes(ctx);
         let now = Instant::now();
         if self.winamp_level_reassert > 0 {
@@ -5645,6 +5647,7 @@ impl App {
 
     /// Applies an API response to the current page and ignores stale Home data.
     fn handle_api(&mut self, mut response: ApiResponse) {
+        crate::profiling::profile_scope!("handle_api");
         match &mut response {
             ApiResponse::Playlist {
                 id,
@@ -11163,6 +11166,7 @@ impl App {
     }
 
     pub fn frame_ui(&mut self, ui: &mut egui::Ui) {
+        crate::profiling::profile_scope!("frame_ui");
         // The native close can take another frame. Settings already describe
         // the replacement window, but drawing it here would resize this one
         // before eframe saves its geometry. attach clears the switch intent
