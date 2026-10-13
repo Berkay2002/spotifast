@@ -604,6 +604,7 @@ impl BytesLoader for ArtLoader {
 /// light surface: the most common saturated hue, with its lightness pulled
 /// into a range that still reads as a background.
 pub fn accent_color(bytes: &[u8]) -> Option<[u8; 3]> {
+    crate::profiling::profile_scope!("images::accent_color");
     let decoded = image::load_from_memory(bytes).ok()?;
     let small = decoded.thumbnail(48, 48).to_rgb8();
     let mut buckets: HashMap<(u8, u8, u8), (u64, [u64; 3])> = HashMap::new();
@@ -858,6 +859,7 @@ fn blurred_background(bytes: &[u8], sigma: f32) -> Option<egui::ColorImage> {
 }
 
 fn blurred_image(image: image::DynamicImage, sigma: f32) -> egui::ColorImage {
+    crate::profiling::profile_scope!("images::blur_backdrop");
     let image = image.thumbnail(256, 256).blur(sigma).to_rgba8();
     egui::ColorImage::from_rgba_unmultiplied(
         [image.width() as usize, image.height() as usize],
@@ -867,6 +869,7 @@ fn blurred_image(image: image::DynamicImage, sigma: f32) -> egui::ColorImage {
 
 /// Decodes artwork, within the same bounds as every other decode here.
 fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
+    crate::profiling::profile_scope!("images::decode");
     if bytes.len() > MAX_ART_BYTES {
         return Err("artwork is too large".to_string());
     }
@@ -890,6 +893,7 @@ fn decode(bytes: &[u8]) -> Result<image::DynamicImage, String> {
 /// wanted, which is cheap: Lanczos then weighs a few source pixels for each
 /// pixel rather than dozens, for the same picture.
 fn scaled(image: image::DynamicImage, pixels: u32) -> egui::ColorImage {
+    crate::profiling::profile_scope!("images::scale");
     let longer = image.width().max(image.height());
     let image = if longer > pixels {
         let scale = pixels as f32 / longer as f32;
@@ -973,6 +977,7 @@ impl CoverScaler {
 /// Makes the waiting copies, the most recently asked for first, until none
 /// is left, and drops those nobody has asked for lately.
 fn scale_waiting(state: &Mutex<Scaling>, ctx: &egui::Context) {
+    crate::profiling::profile_scope!("images::scale_waiting");
     loop {
         let (uri, bytes, pixels) = {
             let mut state = state.lock().unwrap_or_else(|p| p.into_inner());

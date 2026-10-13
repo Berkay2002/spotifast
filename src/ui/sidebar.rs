@@ -907,6 +907,7 @@ fn nav_row(
 /// Draw Library navigation, shelf controls, search, and the visible rows.
 /// Playlist ownership and text filters are applied before ordering and pin placement.
 fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
+    crate::profiling::profile_scope!("sidebar");
     let palette = app.palette;
     let page = app.page().clone();
     let locale = app.locale;
