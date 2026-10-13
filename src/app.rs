@@ -12377,6 +12377,7 @@ mod tests {
                     crate::ui::widgets::shelf(
                         ui,
                         &app.palette,
+                        crate::i18n::Locale::English,
                         "wheel-test-shelf",
                         "Shelf",
                         |ui| {

@@ -35,9 +35,12 @@ be rate-limited. If a refresh fails, cards already on screen remain available;
 **Retry** is shown when the first load fails. Spotify DJ is left out because
 Spotifast cannot play its special context.
 
-Point at a horizontal shelf, such as Made for you or Recently played on
-Home, and hold `Shift` while turning the mouse wheel. The shelf moves while
-the surrounding page stays put. Release `Shift` to scroll the page normally.
+A horizontal shelf, such as Made for you or Recently played on Home, has no
+scroll bar. Point at it and a round arrow appears at the right end of its
+title, and another to its left once there is something that way; click one to
+move about a screenful. You can also hold `Shift` while turning the mouse
+wheel, swipe a trackpad, or use middle-click autoscroll. The shelf moves while
+the surrounding page stays put. A plain wheel scrolls the page normally.
 
 ## Podcasts on Home
 

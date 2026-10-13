@@ -2599,28 +2599,108 @@ pub fn card(
     }
 }
 
-/// A horizontal shelf of cards with a title.
+/// Which arrows a shelf offers: more content to its left, and to its right.
+/// The slack is egui's rounding of the content width, so the last card
+/// scrolled fully into view does not leave an arrow that goes nowhere.
+fn shelf_arrows(offset: f32, content: f32, viewport: f32) -> (bool, bool) {
+    const SLACK: f32 = 1.0;
+    (offset > SLACK, offset + viewport < content - SLACK)
+}
+
+/// How far a shelf arrow scrolls: a viewport less one card, so the card at
+/// the edge stays in view as the anchor, and never less than one card.
+fn shelf_step(viewport: f32) -> f32 {
+    let card = CARD_WIDTH + CARD_GAP / 2.0;
+    (viewport - card).max(card)
+}
+
+/// A horizontal shelf of cards with a title. It has no scroll bar: the wheel
+/// with shift, a trackpad, a middle-button drag and the arrows on the title
+/// row (shown while the pointer is over the shelf and there is more to see)
+/// scroll it, and a plain wheel still scrolls the page.
 pub fn shelf(
     ui: &mut Ui,
     palette: &Palette,
+    locale: Locale,
     id: &str,
     title: &str,
     add_contents: impl FnOnce(&mut Ui),
 ) {
+    const ARROW: f32 = 28.0;
     ui.add_space(8.0);
-    theme::section_title(ui, palette, title);
+    let title = theme::section_title(ui, palette, title);
     ui.add_space(4.0);
-    crate::autoscroll::show(
+    // An arrow's click is applied inside the shelf's own area on the next
+    // frame: egui hands a scroll delta to whichever area finishes next, which
+    // after this one is the shelf below.
+    let pending = ui.id().with(("shelf-step", id));
+    let output = crate::autoscroll::show(
         ui,
-        egui::ScrollArea::horizontal().id_salt(id),
+        egui::ScrollArea::horizontal()
+            .id_salt(id)
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden),
         egui::Vec2b::new(true, false),
         |ui| {
+            if let Some(step) = ui.ctx().data_mut(|data| data.remove_temp::<f32>(pending)) {
+                ui.scroll_with_delta_animation(vec2(-step, 0.0), Default::default());
+            }
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = CARD_GAP / 2.0;
                 add_contents(ui);
             });
         },
     );
+    let viewport = output.inner_rect.width();
+    let (left, right) = shelf_arrows(output.state.offset.x, output.content_size.x, viewport);
+    let over = Rect::from_min_max(
+        pos2(output.inner_rect.left(), title.rect.top()),
+        output.inner_rect.right_bottom(),
+    );
+    let hovered = ui.rect_contains_pointer(over);
+    let y = title.rect.center().y;
+    let mut x = output.inner_rect.right() - 4.0 - ARROW;
+    for (shown, icon, sign) in [
+        (right, Icon::ChevronRight, 1.0),
+        (left, Icon::ChevronLeft, -1.0),
+    ] {
+        // Made whether or not the arrow shows: a child takes one of the
+        // page's automatic ids, and ids that shift as the pointer comes and
+        // goes would drop the state of everything drawn below the shelf,
+        // such as a card's open menu.
+        let mut child = ui.new_child(
+            UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    pos2(x, y - ARROW / 2.0),
+                    Vec2::splat(ARROW),
+                ))
+                .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
+        );
+        x -= ARROW + 6.0;
+        if !(shown && hovered) {
+            continue;
+        }
+        let label = if sign > 0.0 {
+            gettext(locale, "Scroll right")
+        } else {
+            gettext(locale, "Scroll left")
+        };
+        let clicked = theme::circle_button(
+            &mut child,
+            icon,
+            ARROW,
+            palette.surface_hover,
+            palette.surface_active,
+            palette.text,
+            &label,
+        )
+        .clicked();
+        if clicked {
+            ui.ctx().data_mut(|data| {
+                *data.get_temp_mut_or_default::<f32>(pending) += sign * shelf_step(viewport)
+            });
+            ui.ctx().request_repaint();
+        }
+    }
     ui.add_space(12.0);
 }
 
@@ -3344,6 +3424,132 @@ mod playing_cover_tests {
             "too late"
         );
         assert_eq!(stand_in(None, next, 10.5), None);
+    }
+}
+
+#[cfg(test)]
+mod shelf_arrow_tests {
+    use super::*;
+
+    #[test]
+    fn an_arrow_shows_only_toward_content_that_is_out_of_view() {
+        // #given a shelf twice as wide as its viewport
+        // #then at the start only the right arrow, mid-way both, at the end only the left
+        assert_eq!(shelf_arrows(0.0, 1600.0, 800.0), (false, true));
+        assert_eq!(shelf_arrows(300.0, 1600.0, 800.0), (true, true));
+        assert_eq!(shelf_arrows(800.0, 1600.0, 800.0), (true, false));
+        // #and rounding at either end does not leave an arrow that goes nowhere
+        assert_eq!(shelf_arrows(0.4, 1600.0, 800.0), (false, true));
+        assert_eq!(shelf_arrows(799.5, 1600.0, 800.0), (true, false));
+        // #and content that fits has none
+        assert_eq!(shelf_arrows(0.0, 700.0, 800.0), (false, false));
+    }
+
+    #[test]
+    fn an_arrow_scrolls_a_viewport_less_one_card_and_never_less_than_a_card() {
+        let card = CARD_WIDTH + CARD_GAP / 2.0;
+        assert_eq!(shelf_step(1000.0), 1000.0 - card);
+        assert_eq!(shelf_step(200.0), card);
+        assert_eq!(shelf_step(0.0), card);
+    }
+
+    /// The arrows come and go with the pointer, and what is drawn below the
+    /// shelf must keep its ids while they do: a card's open menu is keyed
+    /// by one.
+    #[test]
+    fn the_arrows_coming_and_going_leave_the_widgets_below_their_ids() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let palette = Palette::dark();
+        let below = |pointer: Option<egui::Pos2>| {
+            let mut id = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 400.0))),
+                    events: pointer.into_iter().map(egui::Event::PointerMoved).collect(),
+                    ..Default::default()
+                },
+                |ui| {
+                    shelf(ui, &palette, Locale::English, "test", "Shelf", |ui| {
+                        ui.allocate_space(vec2(3000.0, 100.0));
+                    });
+                    id = Some(ui.allocate_response(vec2(10.0, 10.0), Sense::hover()).id);
+                },
+            );
+            output.textures_delta.clear();
+            id.unwrap()
+        };
+        let away = below(None);
+        let over = below(Some(pos2(300.0, 60.0)));
+        assert_eq!(away, over);
+    }
+
+    /// Hover the shelf, click each arrow, and watch the content slide: the
+    /// sign of the delta is the one thing nothing else would catch.
+    #[test]
+    fn the_arrows_scroll_the_shelf_right_and_back_left() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let palette = Palette::dark();
+        // (time, content left edge, viewport width, row right edge, title centre)
+        let mut seen = (0.0f64, 0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        let frame = |events: Vec<egui::Event>, seen: &mut (f64, f32, f32, f32, f32)| {
+            seen.0 += 1.0 / 60.0;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 400.0))),
+                    events,
+                    time: Some(seen.0),
+                    ..Default::default()
+                },
+                |ui| {
+                    seen.3 = ui.max_rect().right();
+                    shelf(ui, &palette, Locale::English, "test", "Shelf", |ui| {
+                        seen.1 = ui.max_rect().left();
+                        seen.2 = ui.clip_rect().width();
+                        seen.4 = ui.min_rect().top() - 4.0 - 11.0;
+                        ui.allocate_space(vec2(3000.0, 100.0));
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        };
+        let click = |pos: egui::Pos2, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(vec![], &mut seen);
+        let origin = seen.1;
+        let viewport = seen.2;
+        // The arrows are 28 points wide, 4 in from the row's right end.
+        let right = pos2(seen.3 - 4.0 - 14.0, seen.4);
+        let left = pos2(right.x - 34.0, right.y);
+        let press = |pos: egui::Pos2, seen: &mut (f64, f32, f32, f32, f32)| {
+            frame(vec![egui::Event::PointerMoved(pos)], seen);
+            frame(vec![], seen);
+            frame(vec![click(pos, true)], seen);
+            frame(vec![click(pos, false)], seen);
+            for _ in 0..40 {
+                frame(vec![], seen);
+            }
+        };
+
+        // #when the right arrow is clicked
+        press(right, &mut seen);
+        // #then the content slid left by a step
+        let scrolled = origin - seen.1;
+        assert!(
+            (scrolled - shelf_step(viewport)).abs() < 1.0,
+            "scrolled {scrolled}, step {}",
+            shelf_step(viewport)
+        );
+
+        // #when the left arrow is clicked
+        press(left, &mut seen);
+        // #then the shelf is back at its start
+        assert!((origin - seen.1).abs() < 1.0, "at {}", origin - seen.1);
     }
 }
 
