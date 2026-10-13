@@ -7,3 +7,4 @@ ui/sidebar-tint
 feat/visualizers
 ui/shelf-arrows
 feat/library-sections
+feat/ai-dj
