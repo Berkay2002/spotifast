@@ -41,6 +41,7 @@ pub mod paths;
 pub mod player;
 pub mod playlist_cover;
 pub mod power;
+pub mod prefetch;
 pub mod prerelease;
 pub mod profiling;
 pub mod resample;
