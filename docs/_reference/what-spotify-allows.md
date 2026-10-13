@@ -103,6 +103,11 @@ librespot provides:
 
 - Spotify catalogue playback at up to 320 kbps.
 - Gapless playback, normalisation, and a local audio cache.
+- Crossfade and Automix transitions, and the transitions saved in Mix
+  playlists. Spotifast's librespot fork decodes the next song alongside the
+  current one; Spotifast shapes the overlap with volume, three-band EQ and
+  filter curves of its own, timed on the session's beat analysis (extended
+  metadata kinds 217, 219 and 235).
 - Spotify Connect, so another Spotify client can transfer playback to this
   computer.
 - Shuffle, repeat, seek, and volume.
@@ -145,8 +150,11 @@ The Web API and librespot do not provide these features:
   librespot session which ones and leaves them out of the Podcasts shelf.
 - **Offline listening and downloads.** Spotify's DRM and the project's scope
   rule these out.
-- **Playback speed and crossfade.** librespot supports neither. Spotifast
-  would have to add them to its own audio path.
+- **Playback speed.** librespot does not support it. Spotifast would have to
+  add it to its own audio path. Without it, Automix cannot time-stretch one
+  song to the other's tempo, so it only beat-matches songs whose tempos are
+  within 3 percent, and Mix playlist transitions saved at another speed fall
+  back to an automatic one.
 - **Free-account playback.** Replacing Spotify audio with another source is
   also out of scope. See the
   [contribution guide](https://github.com/crmne/spotifast/blob/main/CONTRIBUTING.md).

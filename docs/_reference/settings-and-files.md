@@ -254,6 +254,9 @@ main fields are:
 | `normalisation` | `false` | Volume normalisation |
 | `autoplay` | `true` | Keep playing similar music at the end |
 | `gapless` | `true` | Gapless playback |
+| `transitions` | `off` | How one song runs into the next: `off`, `crossfade`, or `automix` (beat-matched when the tempos match, a crossfade otherwise). Applies without restarting playback |
+| `crossfade_secs` | `6` | Crossfade length in seconds, 1 to 12 |
+| `mix_transitions` | `true` | Play the transitions saved in Mix playlists when their songs play in playlist order, even with `transitions` off |
 | `audio_backend` | platform | `pulseaudio` or `rodio` on Linux. `rodio` is Spotifast's own output, through ALSA; librespot's separate rodio backend is no longer built in, and a backend this build lacks plays through Spotifast's own output |
 | `audio_cache_mb` | `1024` | On-disk audio cache budget |
 | `theme` | `system` | Follow the system appearance by default; explicit `dark` and `light` choices remain available |

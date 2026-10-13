@@ -282,6 +282,8 @@ pub struct App {
     power: crate::power::Power,
     /// The power state's `metered`, for the engine's prefetcher.
     prefetch_metered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Plans the engine's transitions; settings changes apply to it live.
+    pub(crate) transitions: std::sync::Arc<crate::transition::Planner>,
     /// Whether the system's word on reaching the internet goes to the
     /// backend, which then holds reconnection while there is none. macOS
     /// only: Windows's connectivity hint can say "no internet" on networks
@@ -781,12 +783,14 @@ impl App {
             Err(error) => crate::settings::ProxyConfig::Invalid(error),
         };
         let prefetch_metered = std::sync::Arc::<std::sync::atomic::AtomicBool>::default();
+        let transitions = crate::transition::Planner::new(transition_settings(&settings));
         let mut engine_config = engine_config(
             &dirs,
             &settings,
             applied_proxy.clone(),
             std::sync::Arc::clone(&tap),
             std::sync::Arc::clone(&eq),
+            std::sync::Arc::clone(&transitions),
         );
         engine_config.prefetch_metered = std::sync::Arc::clone(&prefetch_metered);
         let backend = Backend::spawn(
@@ -870,6 +874,7 @@ impl App {
             tray_playing: false,
             power,
             prefetch_metered,
+            transitions,
             follows_reachability: cfg!(target_os = "macos"),
             reachable: true,
             playback_activity: None,
@@ -10298,6 +10303,7 @@ impl App {
                     self.applied_proxy.clone(),
                     std::sync::Arc::clone(&self.winamp.tap),
                     std::sync::Arc::clone(&self.winamp.eq),
+                    std::sync::Arc::clone(&self.transitions),
                 );
                 self.backend.send(Command::RestartEngine(config));
                 if self.local_ready {
@@ -11582,6 +11588,7 @@ pub fn engine_config(
     proxy: crate::settings::ProxyConfig,
     tap: std::sync::Arc<crate::vis::AudioTap>,
     eq: crate::eq::SharedEq,
+    transitions: std::sync::Arc<crate::transition::Planner>,
 ) -> EngineConfig {
     EngineConfig {
         tap,
@@ -11604,6 +11611,7 @@ pub fn engine_config(
         proxy,
         prefetch_metered: Default::default(),
         prefetch_bucket: Default::default(),
+        transitions,
     }
 }
 
@@ -11617,6 +11625,15 @@ pub fn eq_settings(settings: &Settings) -> crate::eq::EqSettings {
         mono: settings.mono,
     }
     .clamped()
+}
+
+/// Transitions as the settings describe them.
+pub fn transition_settings(settings: &Settings) -> crate::transition::Settings {
+    crate::transition::Settings {
+        mode: settings.transitions,
+        crossfade_secs: settings.crossfade_secs.clamp(1, 12),
+        mix_recipes: settings.mix_transitions,
+    }
 }
 
 pub fn volume_to_percent(volume: u16) -> u8 {

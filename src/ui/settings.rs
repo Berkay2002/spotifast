@@ -448,6 +448,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let normalize_volume = gettext(locale, "Normalize volume");
     let autoplay = gettext(locale, "Autoplay");
     let gapless = gettext(locale, "Gapless playback");
+    let transitions = gettext(locale, "Transitions");
+    let mix_transitions = gettext(locale, "Use Mix transitions from playlists");
     let keep_playing = gettext(locale, "Keep music playing when the window closes");
     let update_checks = gettext(locale, "Automatic update checks");
     let audio_cache = gettext(locale, "Audio cache");
@@ -535,6 +537,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             ),
         )
         .when(cfg!(target_os = "macos")),
+        RowText::new(
+            transitions.clone(),
+            gettext(
+                locale,
+                "Crossfade overlaps the end of a song with the next. Automix lines up the beats when the tempos match.",
+            ),
+        ),
+        RowText::new(
+            gettext(locale, "Crossfade length"),
+            gettext(locale, "How long two songs overlap."),
+        )
+        .when(app.settings.transitions == crate::transition::Mode::Crossfade),
+        RowText::new(
+            mix_transitions.clone(),
+            gettext(
+                locale,
+                "Play the transitions saved in Mix playlists, in playlist order.",
+            ),
+        ),
     ];
     if section_matches(&needle, &playback, &playback_rows) {
         any_visible = true;
@@ -659,6 +680,53 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     playback_dirty = true;
                 }
             });
+            // Transitions apply to the running engine, so no restart.
+            let mut transitions_changed = false;
+            filtered_row(ui, &palette, &needle, &playback, &playback_rows[15], |ui| {
+                use crate::transition::Mode;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    // Laid right to left, so the last choice goes first.
+                    for (mode, label) in [
+                        (Mode::Automix, gettext(locale, "Automix")),
+                        (Mode::Crossfade, gettext(locale, "Crossfade")),
+                        (Mode::Off, gettext(locale, "Off")),
+                    ] {
+                        let current = app.settings.transitions == mode;
+                        if theme::soft_button(ui, &palette, None, &label, current).clicked()
+                            && !current
+                        {
+                            app.settings.transitions = mode;
+                            transitions_changed = true;
+                        }
+                    }
+                });
+            });
+            filtered_row(ui, &palette, &needle, &playback, &playback_rows[16], |ui| {
+                transitions_changed |= setting_slider(
+                    ui,
+                    &palette,
+                    &mut app.settings.crossfade_secs,
+                    1..=12,
+                    |slider| slider.step_by(1.0),
+                    |value| value.suffix(" s"),
+                )
+                .changed();
+            });
+            filtered_row(ui, &palette, &needle, &playback, &playback_rows[17], |ui| {
+                transitions_changed |= widgets::switch(
+                    ui,
+                    &palette,
+                    &mix_transitions,
+                    &mut app.settings.mix_transitions,
+                )
+                .changed();
+            });
+            if transitions_changed {
+                changed = true;
+                app.transitions
+                    .set_settings(crate::app::transition_settings(&app.settings));
+            }
             filtered_row(ui, &palette, &needle, &playback, &playback_rows[6], |ui| {
                 if widgets::switch(
                     ui,

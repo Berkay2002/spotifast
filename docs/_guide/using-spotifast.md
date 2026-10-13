@@ -214,7 +214,17 @@ on press and seeks on release.
 
 The default local output smooths volume and mute changes over 30 ms. Explicit
 track changes and play/pause/stop use nominal 50 ms fades. Stopping can shorten
-the fade to the queued audio. Natural track transitions remain gapless.
+the fade to the queued audio. Natural track transitions remain gapless
+unless **Transitions** is set.
+
+**Settings > Playback > Transitions** overlaps the end of each song with the
+start of the next. **Crossfade** fades one into the other over the length you
+choose. **Automix** lines up the downbeats and swaps the bass over eight bars
+when Spotify's analysis says both songs can be mixed and their tempos are
+within 3 percent, and crossfades otherwise. **Use Mix transitions from
+playlists** plays the transitions saved in a Mix playlist when its songs play
+in playlist order. Skipping during a transition goes straight to the incoming
+song; seeking cancels it.
 
 Left and right arrows adjust a focused volume slider by five percentage
 points, or the seek slider by one percent of the song. Screen readers can
