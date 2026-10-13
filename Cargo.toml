@@ -171,6 +171,16 @@ pbkdf2 = "0.12"
 aes = "0.8"
 ctr = "0.9"
 
+# Optional local tooling, never part of a release build: mimalloc is a faster
+# global allocator, and puffin is the frame profiler behind the `profiling`
+# feature (puffin_http serves it to an external puffin_viewer). egui-profiling
+# is the `profiling` crate egui and eframe already compile; its puffin backend
+# is what shows their own scopes, and puffin 0.20 is the version it uses.
+mimalloc = { version = "0.1", optional = true }
+puffin = { version = "0.20", optional = true }
+puffin_http = { version = "0.17", optional = true }
+egui-profiling = { package = "profiling", version = "1", default-features = false, optional = true }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { version = "1.0.2", features = ["keychain"] }
 # The application menus and Dock menu (src/mac_menu.rs). "exception" lets
@@ -230,12 +240,21 @@ demo = []
 # binary at compile time, so building needs cmake, a C++ compiler, and
 # libclang. `--no-default-features` leaves it out.
 milkdrop = ["dep:projectm-sys", "dep:winit", "dep:glutin", "dep:glutin-winit"]
+# The mimalloc global allocator. Local performance builds only.
+mimalloc = ["dep:mimalloc"]
+# Puffin frame profiler served on 127.0.0.1:8585 for puffin_viewer.
+profiling = ["dep:puffin", "dep:puffin_http", "dep:egui-profiling", "egui-profiling/profile-with-puffin"]
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# Local performance builds: `cargo build --profile release-native`.
+[profile.release-native]
+inherits = "release"
+lto = "fat"
 
 # Audio decoding and immediate-mode layout are too slow at opt-level 0 to
 # audition the app in development. Keep every dependency optimized while the
