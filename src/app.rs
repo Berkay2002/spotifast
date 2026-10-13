@@ -280,6 +280,8 @@ pub struct App {
     tray_playing: bool,
     /// The system's power and session state.
     power: crate::power::Power,
+    /// The power state's `metered`, for the engine's prefetcher.
+    prefetch_metered: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Whether the system's word on reaching the internet goes to the
     /// backend, which then holds reconnection while there is none. macOS
     /// only: Windows's connectivity hint can say "no internet" on networks
@@ -778,13 +780,15 @@ impl App {
             Ok(proxy) => proxy,
             Err(error) => crate::settings::ProxyConfig::Invalid(error),
         };
-        let engine_config = engine_config(
+        let prefetch_metered = std::sync::Arc::<std::sync::atomic::AtomicBool>::default();
+        let mut engine_config = engine_config(
             &dirs,
             &settings,
             applied_proxy.clone(),
             std::sync::Arc::clone(&tap),
             std::sync::Arc::clone(&eq),
         );
+        engine_config.prefetch_metered = std::sync::Arc::clone(&prefetch_metered);
         let backend = Backend::spawn(
             dirs.clone(),
             engine_config,
@@ -865,6 +869,7 @@ impl App {
             tray,
             tray_playing: false,
             power,
+            prefetch_metered,
             follows_reachability: cfg!(target_os = "macos"),
             reachable: true,
             playback_activity: None,
@@ -10975,6 +10980,8 @@ impl App {
     /// system is about to do.
     fn sync_power(&mut self, ctx: &egui::Context) {
         let conditions = self.power.conditions();
+        self.prefetch_metered
+            .store(conditions.metered, std::sync::atomic::Ordering::Relaxed);
         let shown =
             !self.window_hidden && !ctx.input(|input| input.viewport().minimized.unwrap_or(false));
         let focused = ctx.input(|input| input.viewport().focused.unwrap_or(true));
@@ -11599,6 +11606,8 @@ pub fn engine_config(
         audio_cache_dir: settings.audio_cache.then(|| dirs.audio_cache_dir()),
         audio_cache_limit: Some(settings.audio_cache_mb.max(64) * 1024 * 1024),
         proxy,
+        prefetch_metered: Default::default(),
+        prefetch_bucket: Default::default(),
     }
 }
 

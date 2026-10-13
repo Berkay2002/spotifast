@@ -1982,6 +1982,8 @@ impl Worker {
                     // Audio settings must not revert a proxy change whose UI
                     // acknowledgement was still in flight when this was clicked.
                     config.proxy = self.engine_config.proxy.clone();
+                    config.prefetch_metered = Arc::clone(&self.engine_config.prefetch_metered);
+                    config.prefetch_bucket = Arc::clone(&self.engine_config.prefetch_bucket);
                     self.engine_config = config;
                     self.replace_engine();
                 }
