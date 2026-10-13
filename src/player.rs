@@ -62,6 +62,9 @@ pub struct EngineConfig {
     pub eq: crate::eq::SharedEq,
     /// Proxy used by the Web API client. Librespot only uses the HTTP form.
     pub proxy: crate::settings::ProxyConfig,
+    /// Whether the connection is metered; the prefetcher waits while it is.
+    /// Shared with the app, which keeps it current.
+    pub prefetch_metered: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl EngineConfig {
@@ -387,6 +390,13 @@ impl Engine {
             Arc::clone(&notify),
             Arc::clone(&audio),
         ));
+        tokio::spawn(crate::prefetch::run(
+            session.clone(),
+            player.get_player_event_channel(),
+            config.bitrate(),
+            Arc::clone(&config.prefetch_metered),
+            config.audio_cache_limit.unwrap_or(0),
+        ));
 
         let connect_config = ConnectConfig {
             name: config.device_name.clone(),
@@ -394,6 +404,8 @@ impl Engine {
             initial_volume: config.initial_volume,
             disable_volume: false,
             volume_steps: 64,
+            // The prefetcher follows the queue through these events.
+            emit_set_queue_events: true,
             ..ConnectConfig::default()
         };
         let (spirc, spirc_task) = Spirc::new(
@@ -1659,6 +1671,7 @@ mod tests {
             audio_cache_dir: None,
             audio_cache_limit: None,
             proxy: crate::settings::ProxyConfig::Off,
+            prefetch_metered: Arc::default(),
         };
         let id = config.device_id();
         assert_eq!(id.len(), 40);

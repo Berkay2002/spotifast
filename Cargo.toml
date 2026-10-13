@@ -125,6 +125,7 @@ raw-window-handle = "0.6"
 # same stack as the rest of the client. SOCKS5 still covers the Web API but
 # not the engine: librespot only speaks HTTP CONNECT.
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-audio = { version = "0.8", default-features = false }
 librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-connect = { version = "0.8", default-features = false }
 librespot-metadata = { version = "0.8", default-features = false }
@@ -303,12 +304,17 @@ hyper-proxy2 = { git = "https://github.com/crmne/hyper-proxy2", rev = "efca48113
 # in-memory credential cache for platform storage (#1802), bounded socket
 # setup that races IPv6 and IPv4 (#1803), playback recovery after a session
 # disconnect (#1765), and a volume set while the device is inactive (#1770).
+# Berkay2002/librespot spotifast-prefetch sits on top of that branch and adds
+# what src/prefetch.rs needs: a memory cache of audio keys, a set queue event
+# after load_track and shuffle (so the prefetcher sees every queue change), and
+# public select_file and stream_data_rate (which file a track would play, and
+# its byte rate).
 # Every librespot crate comes from the fork so one copy exists. Drop each
 # patch once upstream merges it.
-librespot-audio = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-connect = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-core = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-metadata = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-oauth = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-playback = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
-librespot-protocol = { git = "https://github.com/crmne/librespot", rev = "4118319a671f13cb3d85c7a870048216e75ee86e" }
+librespot-audio = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-connect = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-core = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-metadata = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-oauth = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-playback = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-protocol = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }

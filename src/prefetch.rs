@@ -3,14 +3,24 @@
 //! Mirrors Spotify's `SlidingWindowPrefetchStrategy`: a window of upcoming
 //! tracks that grows when tracks are listened to and shrinks when the user
 //! skips or switches context, plus a token bucket that bounds download volume.
-//! No I/O and no clock reads here; time is always passed in, so everything is
-//! unit-testable. The download task that uses this comes in a later change.
-
-// The wiring into the player lands in the next change; until then only tests use these.
-#![cfg_attr(not(test), allow(dead_code))]
+//! `Window` and `Bucket` do no I/O and read no clock; time is always passed in,
+//! so they are unit-testable. `run` is the task that drives them: it follows the
+//! player's events and downloads upcoming tracks into librespot's audio cache,
+//! which the player then picks up (`AudioFile::open` returns a cached file).
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+use librespot_audio::{AudioFile, StreamLoaderController};
+use librespot_core::{FileId, Session, SpotifyId, SpotifyUri};
+use librespot_metadata::audio::AudioItem;
+use librespot_playback::config::Bitrate;
+use librespot_playback::player::{PlayerEvent, select_file, stream_data_rate};
+use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::timeout;
 
 /// Smallest window (tracks ahead).
 pub const MIN: usize = 1;
@@ -51,6 +61,9 @@ pub struct Window {
     item_pos_ms: u64,
     /// Upcoming tracks at the last update, at most `max` of them.
     prev: Vec<String>,
+    /// A duration that arrived before its track became current (the player's
+    /// TrackChanged can beat the SetQueue that makes the track current).
+    pending_len: Option<(String, u64)>,
 }
 
 impl Default for Window {
@@ -69,6 +82,7 @@ impl Window {
             item_len_ms: None,
             item_pos_ms: 0,
             prev: Vec::new(),
+            pending_len: None,
         }
     }
 
@@ -79,11 +93,22 @@ impl Window {
         }
     }
 
-    /// Duration of `uri`; ignored unless it is the current track.
+    /// Duration of `uri`. Kept for later when it is not the current track yet.
     pub fn duration(&mut self, uri: &str, ms: u64) {
         if self.item.as_deref() == Some(uri) {
             self.item_len_ms = Some(ms);
+        } else {
+            self.pending_len = Some((uri.to_owned(), ms));
         }
+    }
+
+    pub fn current(&self) -> Option<&str> {
+        self.item.as_deref()
+    }
+
+    /// Whether `uri` is one of the tracks the window currently covers.
+    pub fn in_window(&self, uri: &str) -> bool {
+        self.prev.iter().take(self.size).any(|u| u == uri)
     }
 
     /// Queue or current track changed. `upcoming` is the queue after `current`.
@@ -103,7 +128,13 @@ impl Window {
                 }
             }
             self.item = Some(current.to_owned());
-            self.item_len_ms = None;
+            self.item_len_ms = match self.pending_len.take() {
+                Some((uri, ms)) if uri == current => Some(ms),
+                other => {
+                    self.pending_len = other;
+                    None
+                }
+            };
             self.item_pos_ms = 0;
         }
 
@@ -158,6 +189,11 @@ impl Bucket {
         }
     }
 
+    /// Whether `need` bytes could ever be taken (it is within the capacity).
+    pub fn fits(&self, need: u64) -> bool {
+        need as f64 <= self.cap
+    }
+
     /// Refill up to `now`, then spend `need` bytes if available.
     pub fn take(&mut self, need: u64, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
@@ -169,6 +205,317 @@ impl Bucket {
         }
         self.tokens -= need;
         true
+    }
+}
+
+/// How long resolving a track's metadata or opening its download may take.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// A download in progress. Dropping it cancels the download.
+struct InFlight {
+    uri: String,
+    id: SpotifyId,
+    file_id: FileId,
+    path: PathBuf,
+    started: Instant,
+    _file: AudioFile,
+    _ctl: StreamLoaderController,
+}
+
+struct Prefetcher {
+    session: Session,
+    bitrate: Bitrate,
+    metered: Arc<AtomicBool>,
+    window: Window,
+    bucket: Bucket,
+    failed: HashMap<String, Instant>,
+    /// Files of tracks seen so far, to tell whether one is cached.
+    files: HashMap<String, FileId>,
+    /// The current track and the file the player will use for it, from its
+    /// TrackChanged (`None` file: nothing playable, so nothing to wait for).
+    current_file: Option<(String, Option<FileId>)>,
+    has_current: bool,
+    inflight: Option<InFlight>,
+    /// Do nothing until then (after a queue change, or while blocked).
+    hold_until: Instant,
+}
+
+/// Follows the player and keeps the audio cache filled with the tracks about
+/// to play. Runs until the event channel closes. `cache_limit` is the audio
+/// cache size in bytes.
+pub async fn run(
+    session: Session,
+    mut events: UnboundedReceiver<PlayerEvent>,
+    bitrate: Bitrate,
+    metered: Arc<AtomicBool>,
+    cache_limit: u64,
+) {
+    let now = Instant::now();
+    let mut p = Prefetcher {
+        session,
+        bitrate,
+        metered,
+        window: Window::default(),
+        bucket: Bucket::new(bucket_cap(cache_limit), REFILL_BYTES, REFILL_PERIOD, now),
+        failed: HashMap::new(),
+        files: HashMap::new(),
+        current_file: None,
+        has_current: false,
+        inflight: None,
+        hold_until: now,
+    };
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            event = events.recv() => match event {
+                Some(event) => p.on_event(event),
+                None => return,
+            },
+            _ = tick.tick() => p.step().await,
+        }
+    }
+}
+
+fn is_track(uri: &str) -> bool {
+    uri.starts_with("spotify:track:")
+}
+
+impl Prefetcher {
+    fn on_event(&mut self, event: PlayerEvent) {
+        match event {
+            PlayerEvent::SetQueue {
+                current_track,
+                next_tracks,
+                ..
+            } => {
+                let Some(current) = current_track else {
+                    self.has_current = false;
+                    self.drop_inflight("cancel", "no current track");
+                    return;
+                };
+                let before = self.window.size;
+                let upcoming: Vec<String> = next_tracks.into_iter().map(|t| t.uri).collect();
+                self.window.update(&current.uri, &upcoming);
+                self.has_current = true;
+                self.hold_until = Instant::now() + SETTLE;
+                if self.window.size != before {
+                    log::debug!("prefetch: window {before} -> {}", self.window.size);
+                }
+            }
+            PlayerEvent::Stopped { .. } => self.has_current = false,
+            PlayerEvent::PositionChanged {
+                track_id,
+                position_ms,
+                ..
+            }
+            | PlayerEvent::Seeked {
+                track_id,
+                position_ms,
+                ..
+            }
+            | PlayerEvent::Paused {
+                track_id,
+                position_ms,
+                ..
+            }
+            | PlayerEvent::Playing {
+                track_id,
+                position_ms,
+                ..
+            } => {
+                let uri = track_id.to_uri();
+                if self.window.current() == Some(uri.as_str()) {
+                    self.has_current = true;
+                }
+                self.window.played(&uri, u64::from(position_ms));
+            }
+            PlayerEvent::TrackChanged { audio_item } => {
+                self.window
+                    .duration(&audio_item.uri, u64::from(audio_item.duration_ms));
+                let file = select_file(&audio_item.files, self.bitrate).map(|(_, id)| id);
+                if let Some(id) = file {
+                    self.files.insert(audio_item.uri.clone(), id);
+                }
+                self.current_file = Some((audio_item.uri, file));
+            }
+            _ => return,
+        }
+        // A prefetch for the track that just became current, or that left the
+        // window, is pointless.
+        let stale = self.inflight.as_ref().is_some_and(|f| {
+            self.window.current() == Some(f.uri.as_str()) || !self.window.in_window(&f.uri)
+        });
+        if stale {
+            self.drop_inflight("cancel", "track is current or left the window");
+        }
+    }
+
+    fn drop_inflight(&mut self, what: &str, why: &str) {
+        if let Some(f) = self.inflight.take() {
+            log::debug!("prefetch: {what} {} ({why})", f.uri);
+        }
+    }
+
+    fn fail(&mut self, uri: &str, why: &str) {
+        log::debug!("prefetch: failed {uri} ({why})");
+        self.failed.insert(uri.to_owned(), Instant::now());
+        // The map only ever needs the last minute.
+        self.failed.retain(|_, at| at.elapsed() < FAILED_TTL);
+    }
+
+    fn cache_path(&self, file: FileId) -> Option<PathBuf> {
+        self.session.cache()?.file_path(file)
+    }
+
+    fn cached(&self, file: FileId) -> bool {
+        self.cache_path(file).is_some_and(|p| p.exists())
+    }
+
+    /// The audio cache is on (a path exists for any file id).
+    fn cache_on(&self) -> bool {
+        self.cache_path(FileId::from_raw(&[0; 20])).is_some()
+    }
+
+    async fn step(&mut self) {
+        if !self.cache_on() || self.metered.load(Ordering::Relaxed) || !self.has_current {
+            self.drop_inflight("cancel", "off, metered or nothing playing");
+            return;
+        }
+        if let Some(f) = &self.inflight {
+            if f.path.exists() {
+                let (uri, id, file_id) = (f.uri.clone(), f.id, f.file_id);
+                let secs = f.started.elapsed().as_secs_f32();
+                self.inflight = None;
+                log::debug!("prefetch: done {uri} in {secs:.1}s");
+                // Warm the audio key so the track starts without a round trip.
+                let session = self.session.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = session.audio_key().request(id, file_id).await {
+                        log::debug!("prefetch: key for {uri} failed: {e}");
+                    }
+                });
+            } else if f.started.elapsed() >= INFLIGHT_TIMEOUT {
+                let uri = f.uri.clone();
+                self.inflight = None;
+                self.fail(&uri, "timeout");
+            }
+            return;
+        }
+        if Instant::now() < self.hold_until || !self.current_cached() {
+            return;
+        }
+        // One resolve per window slot per step; failed and cached tracks are
+        // skipped by `next`.
+        for _ in 0..=MAX {
+            let now = Instant::now();
+            let cached = |uri: &str| self.files.get(uri).is_some_and(|id| self.cached(*id));
+            let Some((_, uri)) = self.window.next(cached, &self.failed, now) else {
+                return;
+            };
+            if !self.start(&uri, now).await {
+                return;
+            }
+        }
+    }
+
+    /// Priority gate: the current track's file must be in the cache first.
+    fn current_cached(&self) -> bool {
+        let Some(current) = self.window.current() else {
+            return false;
+        };
+        if !is_track(current) {
+            return true;
+        }
+        match &self.current_file {
+            Some((uri, file)) if uri == current => file.is_none_or(|id| self.cached(id)),
+            _ => false, // its TrackChanged has not arrived yet
+        }
+    }
+
+    /// Resolves and starts downloading `uri`. Returns whether to try the next
+    /// candidate now (`false`: started, or blocked until later).
+    async fn start(&mut self, uri: &str, now: Instant) -> bool {
+        let Ok(SpotifyUri::Track { id }) = SpotifyUri::from_uri(uri) else {
+            self.fail(uri, "not a track");
+            return true;
+        };
+        let spotify_uri = SpotifyUri::Track { id };
+        let item = match timeout(
+            OPEN_TIMEOUT,
+            AudioItem::get_file(&self.session, spotify_uri),
+        )
+        .await
+        {
+            Ok(Ok(item)) => item,
+            Ok(Err(e)) => {
+                self.fail(uri, &format!("metadata: {e}"));
+                return true;
+            }
+            Err(_) => {
+                self.fail(uri, "metadata timeout");
+                return true;
+            }
+        };
+        if let Err(reason) = &item.availability {
+            self.fail(uri, &format!("unavailable: {reason:?}"));
+            return true;
+        }
+        if u64::from(item.duration_ms) > MAX_TRACK_S * 1000 {
+            self.fail(uri, "longer than 420 s");
+            return true;
+        }
+        let Some((format, file_id)) = select_file(&item.files, self.bitrate) else {
+            self.fail(uri, "no playable file");
+            return true;
+        };
+        self.files.insert(uri.to_owned(), file_id);
+        if self.cached(file_id) {
+            return true; // `next` skips it now
+        }
+        let rate = stream_data_rate(format).unwrap_or(40 * 1024);
+        let need = u64::from(item.duration_ms) * rate as u64 / 1000;
+        if !self.bucket.fits(need) {
+            self.fail(uri, "larger than the budget");
+            return true;
+        }
+        if !self.bucket.take(need, now) {
+            log::debug!("prefetch: budget empty, retry in {RETRY:?}");
+            self.hold_until = now + RETRY;
+            return false;
+        }
+        let opened = timeout(OPEN_TIMEOUT, AudioFile::open(&self.session, file_id, rate)).await;
+        let file = match opened {
+            Ok(Ok(file)) => file,
+            Ok(Err(e)) => {
+                self.fail(uri, &format!("open: {e}"));
+                return true;
+            }
+            Err(_) => {
+                self.fail(uri, "open timeout");
+                return true;
+            }
+        };
+        let (Some(path), Ok(ctl)) = (
+            self.cache_path(file_id),
+            file.get_stream_loader_controller(),
+        ) else {
+            self.fail(uri, "no cache path or controller");
+            return true;
+        };
+        // Without this only the first 64 KiB is fetched.
+        ctl.set_stream_mode();
+        log::debug!("prefetch: start {uri} ({need} bytes)");
+        self.inflight = Some(InFlight {
+            uri: uri.to_owned(),
+            id,
+            file_id,
+            path,
+            started: now,
+            _file: file,
+            _ctl: ctl,
+        });
+        false
     }
 }
 
@@ -286,6 +633,33 @@ mod tests {
         assert_eq!(w.item_pos_ms, 0);
     }
 
+    #[test]
+    fn duration_before_set_queue_is_applied() {
+        let mut w = Window::default();
+        w.update(&uri("a"), &uris(&["b", "c", "d"]));
+        // TrackChanged for "b" arrives before the SetQueue that makes "b" current.
+        w.duration(&uri("b"), 200_000);
+        w.update(&uri("b"), &uris(&["c", "d", "e"]));
+        assert_eq!(w.size, 2); // "a" had no length: counted as played
+        w.played(&uri("b"), 10_000);
+        w.update(&uri("c"), &uris(&["d", "e", "f"]));
+        // "b" is 5% played of a known 200 s: an early skip, not a play.
+        assert_eq!(w.size, 1);
+    }
+
+    #[test]
+    fn current_and_in_window() {
+        let mut w = Window::default();
+        assert_eq!(w.current(), None);
+        w.update(&uri("a"), &uris(&["b", "c", "d"]));
+        assert_eq!(w.current(), Some(uri("a").as_str()));
+        assert!(w.in_window(&uri("b")));
+        assert!(!w.in_window(&uri("c"))); // size 1
+        w.size = 3;
+        assert!(w.in_window(&uri("d")));
+        assert!(!w.in_window(&uri("a")));
+    }
+
     fn window_at(size: usize) -> Window {
         let mut w = Window::default();
         w.update(&uri("a"), &uris(&["b", "c", "d"]));
@@ -348,6 +722,13 @@ mod tests {
         assert!(b.take(100, t0));
         assert!(!b.take(1, t0));
         assert!(!b.take(101, t0 + Duration::from_secs(1000))); // above cap never works
+    }
+
+    #[test]
+    fn bucket_fits_only_within_cap() {
+        let b = bucket(Instant::now());
+        assert!(b.fits(100));
+        assert!(!b.fits(101));
     }
 
     #[test]
