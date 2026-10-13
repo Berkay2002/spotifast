@@ -22,7 +22,7 @@ pub const CONFIG: UpdateConfig = UpdateConfig {
     // before downloading an update, using the release workflow's public key.
     publisher_key: Some(include_str!("../assets/update-public-key.hex")),
     ..UpdateConfig::new(
-        "crmne/spotifast",
+        "Berkay2002/spotifast",
         "Spotifast",
         "spotifast",
         env!("CARGO_PKG_VERSION"),
