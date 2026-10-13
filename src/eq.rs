@@ -340,8 +340,10 @@ pub fn shared() -> SharedEq {
 }
 
 /// A second-order section in direct form I, one per band and channel.
+/// Direct form I also keeps a filter whose coefficients move every few
+/// samples (the transitions' sweeps) free of zipper noise.
 #[derive(Clone, Copy, Debug, Default)]
-struct Biquad {
+pub(crate) struct Biquad {
     b0: f64,
     b1: f64,
     b2: f64,
@@ -389,8 +391,49 @@ impl Biquad {
         10.0 * (numerator / denominator).log10()
     }
 
+    /// A cookbook low-pass at `hz` with quality `q`.
+    pub(crate) fn lowpass(hz: f64, q: f64) -> Self {
+        let w0 = std::f64::consts::TAU * hz / f64::from(SAMPLE_RATE);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 - cos) / 2.0 / a0,
+            b1: (1.0 - cos) / a0,
+            b2: (1.0 - cos) / 2.0 / a0,
+            a1: (-2.0 * cos) / a0,
+            a2: (1.0 - alpha) / a0,
+            ..Self::default()
+        }
+    }
+
+    /// A cookbook high-pass at `hz` with quality `q`.
+    pub(crate) fn highpass(hz: f64, q: f64) -> Self {
+        let w0 = std::f64::consts::TAU * hz / f64::from(SAMPLE_RATE);
+        let (sin, cos) = w0.sin_cos();
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self {
+            b0: (1.0 + cos) / 2.0 / a0,
+            b1: -(1.0 + cos) / a0,
+            b2: (1.0 + cos) / 2.0 / a0,
+            a1: (-2.0 * cos) / a0,
+            a2: (1.0 - alpha) / a0,
+            ..Self::default()
+        }
+    }
+
+    /// Takes `other`'s coefficients and keeps this filter's history.
+    pub(crate) fn retune(&mut self, other: Self) {
+        self.b0 = other.b0;
+        self.b1 = other.b1;
+        self.b2 = other.b2;
+        self.a1 = other.a1;
+        self.a2 = other.a2;
+    }
+
     #[inline]
-    fn run(&mut self, x: f64) -> f64 {
+    pub(crate) fn run(&mut self, x: f64) -> f64 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
             - self.a2 * self.y2;
