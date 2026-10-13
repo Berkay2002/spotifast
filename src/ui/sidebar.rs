@@ -922,6 +922,11 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     {
         app.actions.push(Action::Open(Page::Home));
     }
+    if app.settings.dj_enabled
+        && nav_row(ui, &palette, Icon::Sparkles, "DJ", page == Page::Dj).clicked()
+    {
+        app.actions.push(Action::Open(Page::Dj));
+    }
     if nav_row(
         ui,
         &palette,
@@ -932,11 +937,6 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     .clicked()
     {
         app.actions.push(Action::FocusSearch);
-    }
-    if app.settings.dj_enabled
-        && nav_row(ui, &palette, Icon::Sparkles, "DJ", page == Page::Dj).clicked()
-    {
-        app.actions.push(Action::Open(Page::Dj));
     }
     ui.add_space(10.0);
     ui.painter().hline(

@@ -267,7 +267,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
             if let Some(tint) = tint {
                 let strength = if matches!(
                     app.page(),
-                    Page::Home | Page::Search | Page::Settings | Page::Queue | Page::Dj
+                    Page::Home | Page::Search | Page::Settings | Page::Queue
                 ) {
                     0.45
                 } else {
