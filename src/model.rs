@@ -583,6 +583,10 @@ pub struct Library {
     /// The list shown is whole: every page of one load, or a restored
     /// cache. Only a whole list is saved for the next start.
     pub playlists_whole: bool,
+    /// The list shown was built from the rootlist and the streaming session
+    /// because the Web API had not answered. A list the Web API or the disk
+    /// cache gives replaces it.
+    pub playlists_from_rootlist: bool,
     pub liked: PagedList<SavedTrack>,
     pub albums: PagedList<SavedAlbum>,
     pub artists: CursorList<Artist>,

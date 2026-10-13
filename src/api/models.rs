@@ -555,6 +555,12 @@ impl Playlist {
             return;
         }
         self.name = header.name.clone();
+        // An entry built from the rootlist alone has no owner yet; one the
+        // Web API listed blank always has.
+        if self.owner.id.is_none() {
+            self.owner = header.owner.clone();
+            self.collaborative = header.collaborative;
+        }
         if self.images.is_empty() {
             self.images = header.images.clone();
         }
