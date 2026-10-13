@@ -20,6 +20,9 @@ const HIGHPASS_OPEN_HZ: f32 = 25.0;
 /// Gains slew towards their curve with this time constant, so a step in a
 /// curve (a bass kill, a cut) lands without a click.
 const SLEW_SECONDS: f64 = 0.005;
+/// Above this the overlap's sum bends smoothly toward full scale instead of
+/// clipping: two loud masters at once can exceed it.
+const KNEE: f64 = 0.95;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilterKind {
@@ -92,11 +95,23 @@ impl Mixer {
             {
                 let (al, ar) = self.outgoing.frame(a[0], a[1]);
                 let (bl, br) = self.incoming.frame(b[0], b[1]);
-                a[0] = al + bl;
-                a[1] = ar + br;
+                a[0] = soft_clip(al + bl);
+                a[1] = soft_clip(ar + br);
             }
         }
     }
+}
+
+/// Unchanged up to the knee, then a tanh curve that meets the line with the
+/// same slope and never reaches full scale.
+#[inline]
+fn soft_clip(x: f64) -> f64 {
+    let magnitude = x.abs();
+    if magnitude <= KNEE {
+        return x;
+    }
+    let headroom = 1.0 - KNEE;
+    (KNEE + headroom * ((magnitude - KNEE) / headroom).tanh()).copysign(x)
 }
 
 impl TransitionMix for Mixer {
@@ -205,7 +220,7 @@ impl Lane {
     }
 
     fn retarget(&mut self, t: f32) {
-        self.volume.target = f64::from(self.shape.volume.eval(t).clamp(0.0, 2.0));
+        self.volume.target = f64::from(self.shape.volume.eval(t).clamp(0.0, 1.0));
         let mut flat = true;
         for (band, curve) in self.eq.iter_mut().zip(&self.shape.eq) {
             let db = curve
@@ -268,6 +283,45 @@ mod tests {
     use super::*;
 
     const RATE: f64 = 44_100.0;
+
+    #[test]
+    fn no_preset_clips_two_full_scale_tracks() {
+        use crate::transition::preset::Preset;
+        let frames = (RATE * 4.0) as usize;
+        let full = |hz: f64| -> Vec<f64> {
+            (0..frames)
+                .flat_map(|i| {
+                    let s = (std::f64::consts::TAU * hz * i as f64 / RATE)
+                        .sin()
+                        .signum();
+                    [s, s]
+                })
+                .collect()
+        };
+        for preset in [
+            Preset::Crossfade,
+            Preset::Fade,
+            Preset::Blend,
+            Preset::Rise,
+            Preset::Melt,
+            Preset::Wave,
+            Preset::Slam,
+        ] {
+            // The same signal on both sides adds up the most.
+            for b in [full(55.0), full(73.4)] {
+                let mut mixer = Mixer::new(preset.shape());
+                let mut a = full(55.0);
+                for (index, (a, b)) in a.chunks_mut(1024).zip(b.chunks(1024)).enumerate() {
+                    mixer.process(a, b, index as u64 * 512, frames as u64);
+                }
+                let peak = a.iter().fold(0.0f64, |peak, s| peak.max(s.abs()));
+                assert!(peak <= 1.0, "{preset:?} peaks at {peak}");
+            }
+        }
+        assert_eq!(soft_clip(0.5), 0.5);
+        assert!(soft_clip(-3.0) >= -1.0 && soft_clip(3.0) <= 1.0);
+        assert!(soft_clip(0.97) < 0.97 && soft_clip(0.97) > 0.96);
+    }
 
     fn tone(hz: f64, frames: usize) -> Vec<f64> {
         (0..frames)
@@ -337,13 +391,13 @@ mod tests {
             incoming: TrackShape::volume(Curve::linear(&[(0.0, 0.0), (1.0, 1.0)])),
         });
         let frames = 44_100;
-        let mut a = vec![1.0; frames * 2];
+        let mut a = vec![0.9; frames * 2];
         let b = vec![0.5; frames * 2];
         mixer.process(&mut a, &b, 0, frames as u64);
-        assert!((a[0] - 1.0).abs() < 1e-3);
-        // Halfway: 0.5 * 1.0 + 0.5 * 0.5, a little behind for the slew.
+        assert!((a[0] - 0.9).abs() < 1e-3);
+        // Halfway: 0.5 * 0.9 + 0.5 * 0.5, a little behind for the slew.
         let mid = a[frames];
-        assert!((mid - 0.75).abs() < 0.01, "{mid}");
+        assert!((mid - 0.7).abs() < 0.01, "{mid}");
         assert!((a[a.len() - 1] - 0.5).abs() < 0.01);
     }
 

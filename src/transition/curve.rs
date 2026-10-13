@@ -13,6 +13,9 @@ use protobuf::CodedInputStream;
 /// so a curve is evaluated on the audio thread only within these.
 const MAX_PIECES: usize = 64;
 const MAX_POINTS: usize = 64;
+/// Larger than any gain, dB, Hz or Q a curve drives, and small enough that
+/// the Bézier and linear arithmetic cannot overflow.
+const MAX_VALUE: f32 = 1e6;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Piece {
@@ -133,7 +136,7 @@ fn decode_piece(bytes: &[u8]) -> anyhow::Result<Piece> {
     let finite = [piece.start, piece.end]
         .into_iter()
         .chain(piece.points.iter().flat_map(|&(x, y)| [x, y]))
-        .all(f32::is_finite);
+        .all(|value| value.abs() <= MAX_VALUE);
     anyhow::ensure!(finite, "curve value out of range");
     Ok(piece)
 }
@@ -269,6 +272,12 @@ mod tests {
         // Too large for an f32: infinite once narrowed.
         let mut piece = vec![0x11];
         piece.extend(1e300f64.to_le_bytes());
+        let mut bytes = vec![0x0a, piece.len() as u8];
+        bytes.extend(&piece);
+        assert!(Curve::decode(&bytes).is_err());
+        // Finite as an f32, but large enough to overflow on evaluation.
+        let mut piece = vec![0x19];
+        piece.extend(1e30f64.to_le_bytes());
         let mut bytes = vec![0x0a, piece.len() as u8];
         bytes.extend(&piece);
         assert!(Curve::decode(&bytes).is_err());
