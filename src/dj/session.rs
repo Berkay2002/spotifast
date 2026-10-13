@@ -22,6 +22,9 @@ use std::time::{Duration, Instant};
 /// How long a tool call waits for the app before it is told the app did not answer. The CLI's own
 /// limit for a call is longer (`claude.rs`).
 const TOOL_WAIT: Duration = Duration::from_secs(30);
+/// What a change waiting for approval is told when the turn that asked for it is over: the model
+/// has been told it failed, so approving later must not run it.
+const TURN_ENDED: &str = "The request ended before the listener answered, so nothing was changed.";
 /// How long the listener has to approve a change before it counts as declined.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(240);
 /// The chat keeps this many lines; older ones are dropped.
@@ -448,6 +451,7 @@ impl Dj {
                 self.push(LineKind::Tool, text);
             }
             ChatEvent::Done { answer } => {
+                self.decline_all(TURN_ENDED);
                 if self.background && agent::is_nothing(&answer) {
                     if self.live {
                         self.lines.pop();
@@ -462,6 +466,7 @@ impl Dj {
                 self.save_chat();
             }
             ChatEvent::Cancelled => {
+                self.decline_all(TURN_ENDED);
                 self.live = false;
                 self.busy = false;
                 self.phase = None;
@@ -469,6 +474,7 @@ impl Dj {
                 self.save_chat();
             }
             ChatEvent::Error { message, hint } => {
+                self.decline_all(TURN_ENDED);
                 self.live = false;
                 self.busy = false;
                 self.phase = None;
@@ -799,6 +805,28 @@ mod tests {
                 .contains("nothing was changed")
         );
         assert!(dj.take_approval(id).is_none());
+    }
+
+    #[test]
+    fn a_change_still_waiting_when_the_turn_ends_is_declined() {
+        let (mut dj, _) = dj_with(
+            vec![ChatEvent::Error {
+                message: "stopped".into(),
+                hint: None,
+            }],
+            ok_status(),
+        );
+        let (rx, tx) = waiting_call();
+        dj.ask_approval("one".into(), Call::Skip, tx);
+        dj.ask("x", "sonnet", "low");
+        dj.poll();
+        assert!(dj.approvals.is_empty());
+        assert!(
+            rx.recv()
+                .unwrap()
+                .unwrap_err()
+                .contains("nothing was changed")
+        );
     }
 
     #[test]

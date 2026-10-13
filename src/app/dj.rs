@@ -227,6 +227,20 @@ impl App {
             ));
             return;
         }
+        // A change names songs the listener can read about: one the DJ has not seen is refused
+        // before anything is asked.
+        let named = match &call {
+            Call::LikeTracks { uris }
+            | Call::UnlikeTracks { uris }
+            | Call::AddToPlaylist { uris, .. }
+            | Call::RemoveFromPlaylist { uris, .. }
+            | Call::CreatePlaylist { uris, .. } => Some(uris),
+            _ => None,
+        };
+        if let Some(Err(error)) = named.map(|uris| self.dj_known_tracks(uris)) {
+            let _ = reply.send(Err(error));
+            return;
+        }
         // Notes and schedules are asked about even with the library gate off: they outlive the
         // conversation.
         let lasting = matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. });
@@ -238,18 +252,46 @@ impl App {
         }
     }
 
-    /// Names for up to five songs: "A; B; C and 4 more".
+    /// A song the DJ has seen: found by search or a read, or on the queue.
+    fn dj_track(&self, uri: &str) -> Option<Track> {
+        if let Some(track) = util::uri_id(uri).and_then(|id| self.track_cache.get(id)) {
+            return Some(track.clone());
+        }
+        let queue = self.queue.get()?;
+        queue
+            .currently_playing
+            .iter()
+            .chain(queue.queue.iter())
+            .find_map(|item| match item {
+                PlayableItem::Track(track) if track.uri == uri => Some(track.clone()),
+                _ => None,
+            })
+    }
+
+    /// Names for the songs a change touches, as the listener will read them: "A by X; B by Y and
+    /// 4 more". Every song in a change is one the DJ has seen (`dj_known_tracks`), so none is
+    /// shown as a bare "a song".
     fn dj_names(&self, uris: &[String]) -> String {
         let name = |uri: &String| {
-            util::uri_id(uri)
-                .and_then(|id| self.track_cache.get(id))
-                .map(|track| render::clean(&track.name))
-                .unwrap_or_else(|| "a song".to_string())
+            self.dj_track(uri)
+                .map(|track| {
+                    let by: Vec<String> = track
+                        .artists
+                        .iter()
+                        .map(|artist| render::clean(&artist.name))
+                        .collect();
+                    if by.is_empty() {
+                        render::clean(&track.name)
+                    } else {
+                        format!("{} by {}", render::clean(&track.name), by.join(", "))
+                    }
+                })
+                .unwrap_or_else(|| uri.clone())
         };
-        let shown: Vec<String> = uris.iter().take(5).map(name).collect();
+        let shown: Vec<String> = uris.iter().take(8).map(name).collect();
         let mut out = shown.join("; ");
-        if uris.len() > 5 {
-            out.push_str(&format!(" and {} more", uris.len() - 5));
+        if uris.len() > 8 {
+            out.push_str(&format!(" and {} more", uris.len() - 8));
         }
         out
     }
@@ -279,13 +321,28 @@ impl App {
                 )
             }
             Call::CreatePlaylist {
-                name, uris, public, ..
-            } => format!(
-                "Create the {} playlist \"{}\" with {}",
-                if *public { "public" } else { "private" },
-                render::clean(name),
-                songs(uris.len())
-            ),
+                name,
+                description,
+                uris,
+                public,
+            } => {
+                let mut out = format!(
+                    "Create the {} playlist \"{}\"",
+                    if *public { "public" } else { "private" },
+                    render::clean(name),
+                );
+                if !description.is_empty() {
+                    out.push_str(&format!(
+                        ", described as \"{}\"",
+                        render::clean(description)
+                    ));
+                }
+                out.push_str(&format!(" with {}", songs(uris.len())));
+                if !uris.is_empty() {
+                    out.push_str(&format!(": {}", self.dj_names(uris)));
+                }
+                out
+            }
             Call::AddToPlaylist { uri, uris } => format!(
                 "Add {} to \"{}\": {}",
                 songs(uris.len()),
@@ -349,12 +406,9 @@ impl App {
     fn dj_known_tracks(&self, uris: &[String]) -> Result<Vec<Track>, String> {
         uris.iter()
             .map(|uri| {
-                util::uri_id(uri)
-                    .and_then(|id| self.track_cache.get(id))
-                    .cloned()
-                    .ok_or_else(|| {
-                        format!("Song {uri} has not been seen yet. Find it with search first.")
-                    })
+                self.dj_track(uri).ok_or_else(|| {
+                    format!("Song {uri} has not been seen yet. Find it with search first.")
+                })
             })
             .collect()
     }

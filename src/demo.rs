@@ -1406,6 +1406,8 @@ mod tests {
         );
         app.attach(&ctx);
         populate(&mut app);
+        // The DJ row would shift the sidebar these tests locate by position.
+        app.settings.dj_enabled = false;
         // These frames never advance the clock or take pictures.
         app.reveal_theme_changes = false;
         (ctx, app)
