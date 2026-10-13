@@ -4492,7 +4492,11 @@ impl App {
         self.load_made_for_you(force);
         // The podcast shelf reads from the saved shows. The first page of
         // them is the one the Podcasts shelf of the library asks for.
-        if self.library.shows.loaded_once {
+        if !self.settings.library_sidebar.podcasts {
+            // Without podcasts the shelf is empty and nothing asks for them.
+            self.home.podcasts.clear();
+            self.home.podcasts_answered = true;
+        } else if self.library.shows.loaded_once {
             self.request_home_episodes();
         } else if !self.library.shows.loading && self.library.shows.error.is_none() {
             self.load_more(Page::Podcasts);
@@ -4520,7 +4524,9 @@ impl App {
     /// once per Home refresh. Known audiobooks are skipped: librespot cannot
     /// play them.
     fn request_home_episodes(&mut self) {
-        if self.home.podcasts_generation == self.home.generation {
+        if !self.settings.library_sidebar.podcasts
+            || self.home.podcasts_generation == self.home.generation
+        {
             return;
         }
         self.home.podcasts_generation = self.home.generation;
@@ -4596,7 +4602,21 @@ impl App {
         self.load_recents(true);
     }
 
+    /// A Library list the sidebar does not offer is never fetched.
+    fn library_list_offered(&self, page: &Page) -> bool {
+        let sidebar = &self.settings.library_sidebar;
+        match page {
+            Page::Albums => sidebar.albums,
+            Page::Artists => sidebar.artists,
+            Page::Podcasts | Page::Episodes => sidebar.podcasts,
+            _ => true,
+        }
+    }
+
     pub fn load_more(&mut self, page: Page) {
+        if !self.library_list_offered(&page) {
+            return;
+        }
         if !self.network_reachable {
             if matches!(page, Page::LikedSongs) && !self.liked_songs.cache_checked {
                 self.ensure_liked_songs();
@@ -5378,6 +5398,7 @@ impl App {
         self.backend.api(ApiRequest::Search {
             query,
             serial: self.search.serial,
+            podcasts: self.settings.library_sidebar.podcasts,
         });
     }
 
@@ -6696,7 +6717,10 @@ impl App {
                         .items
                         .iter()
                         .map(|item| item.show.uri.clone())
-                        .filter(|uri| self.audiobooks_requested.insert(uri.clone()))
+                        .filter(|uri| {
+                            self.settings.library_sidebar.podcasts
+                                && self.audiobooks_requested.insert(uri.clone())
+                        })
                         .collect();
                     if !unknown.is_empty() {
                         self.backend.send(Command::AudiobookShows(unknown));
@@ -19011,6 +19035,62 @@ mod tests {
             result: Err(crate::api::ApiError::RateLimited),
         });
         assert_eq!(app.home.podcasts, episodes(0), "a failure keeps the shelf");
+        app.backend.shutdown();
+        let _ = std::fs::remove_dir_all(app.dirs.config.parent().unwrap());
+    }
+
+    /// With podcasts off in the Library sidebar, no request for saved shows,
+    /// saved episodes, their audiobook lookup or Home's podcast shelf is made,
+    /// and a search no longer asks for shows and episodes.
+    #[test]
+    fn no_podcast_work_starts_while_podcasts_are_off() {
+        use crate::api::models::{Page as ApiPage, SavedShow};
+        let mut app = test_app("podcasts-off");
+        app.settings.library_sidebar.podcasts = false;
+        app.load_home(false);
+        app.load_more(Page::Podcasts);
+        app.load_more(Page::Episodes);
+        assert!(!app.library.shows.loading, "no saved shows are asked for");
+        assert!(!app.library.episodes.loading);
+        assert!(app.home.podcasts_answered && app.home.podcasts.is_empty());
+
+        // A page of shows that was already on its way finds no shelf to feed
+        // and no lookup to start.
+        app.library.shows.next_offset = Some(0);
+        app.handle_api(ApiResponse::SavedShows {
+            offset: 0,
+            result: Ok(ApiPage {
+                items: vec![SavedShow {
+                    show: Show {
+                        id: "s0".into(),
+                        uri: "spotify:show:s0".into(),
+                        ..Show::default()
+                    },
+                    ..SavedShow::default()
+                }],
+                total: 1,
+                limit: 50,
+                offset: 0,
+                next: None,
+            }),
+        });
+        assert!(app.backend.take_home_episode_requests().is_empty());
+
+        // Albums and Artists follow their own switches.
+        app.load_more(Page::Albums);
+        assert!(app.library.albums.loading, "albums are on");
+        app.library.albums.loading = false;
+        app.settings.library_sidebar.albums = false;
+        app.settings.library_sidebar.artists = false;
+        app.load_more(Page::Albums);
+        app.load_more(Page::Artists);
+        assert!(!app.library.albums.loading && !app.library.artists.loading);
+
+        // Turning podcasts back on asks again.
+        app.settings.library_sidebar.podcasts = true;
+        app.library.shows.next_offset = Some(0);
+        app.load_more(Page::Podcasts);
+        assert!(app.library.shows.loading);
         app.backend.shutdown();
         let _ = std::fs::remove_dir_all(app.dirs.config.parent().unwrap());
     }

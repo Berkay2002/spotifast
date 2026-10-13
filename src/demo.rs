@@ -1662,6 +1662,61 @@ mod tests {
         app.backend.shutdown();
     }
 
+    /// Library sections, the sort control and By You can each be hidden. A
+    /// hidden sort keeps the sort chosen, and a hidden By You filters nothing.
+    #[test]
+    fn the_library_sidebar_hides_what_the_settings_turn_off() {
+        use crate::settings::{LibraryShelf, LibrarySort};
+        use egui::accesskit::Role;
+        let (ctx, mut app) = accessible_app("library-sidebar-hidden");
+        app.settings.art_expanded = false;
+        app.settings
+            .library_sort
+            .insert(LibraryShelf::Playlists, LibrarySort::Name);
+        app.settings.library_by_you = true;
+        accessible_frame(&ctx, &mut app, vec![]);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        for label in [
+            "Playlists",
+            "Albums",
+            "Artists",
+            "Podcasts",
+            "Name",
+            "By You",
+        ] {
+            accessible_node(&tree, label, Role::Button);
+        }
+        let has = |tree: &egui::accesskit::TreeUpdate, label: &str| {
+            tree.nodes
+                .iter()
+                .any(|(_, node)| node.label() == Some(label))
+        };
+
+        app.settings.library_sidebar.podcasts = false;
+        app.settings.library_sidebar.albums = false;
+        app.settings.library_sidebar.sort = false;
+        app.settings.library_sidebar.by_you = false;
+        accessible_frame(&ctx, &mut app, vec![]);
+        let tree = accessible_frame(&ctx, &mut app, vec![]);
+        accessible_node(&tree, "Playlists", Role::Button);
+        accessible_node(&tree, "Artists", Role::Button);
+        for label in ["Albums", "Podcasts", "Name", "By You"] {
+            assert!(!has(&tree, label), "{label} should be hidden");
+        }
+        assert_eq!(
+            crate::ui::sidebar::selected_sort(&app, LibraryShelf::Playlists),
+            LibrarySort::Name,
+            "a hidden sort control keeps the sort chosen"
+        );
+        assert!(
+            app.settings.library_by_you && !app.settings.by_you_active(),
+            "a hidden By You filters nothing and remembers its choice"
+        );
+        // Discover Weekly is not owned by the user, and shows with By You off.
+        accessible_node(&tree, "Discover Weekly", Role::Button);
+        app.backend.shutdown();
+    }
+
     #[test]
     fn translated_sidebar_keeps_keyboard_navigation_and_accessible_names() {
         use crate::i18n::{Locale, gettext};

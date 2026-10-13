@@ -38,6 +38,63 @@ impl LibrarySort {
     }
 }
 
+/// What the Library sidebar offers. Everything on is the sidebar as
+/// shipped, which is what a settings file without this group gets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LibrarySidebar {
+    pub playlists: bool,
+    pub albums: bool,
+    pub artists: bool,
+    /// Off also stops the work for podcasts: saved shows and episodes, the
+    /// audiobook lookup, Home's podcast shelf and podcast search results.
+    pub podcasts: bool,
+    /// Hidden, the sort last chosen stays in use.
+    pub sort: bool,
+    /// Hidden, the By You filter is off.
+    pub by_you: bool,
+}
+
+impl Default for LibrarySidebar {
+    fn default() -> Self {
+        Self {
+            playlists: true,
+            albums: true,
+            artists: true,
+            podcasts: true,
+            sort: true,
+            by_you: true,
+        }
+    }
+}
+
+impl LibrarySidebar {
+    /// Whether the section is offered. A sidebar with every section off
+    /// still offers Playlists, so it is never empty.
+    pub fn offers(&self, shelf: LibraryShelf) -> bool {
+        match shelf {
+            LibraryShelf::Playlists => {
+                self.playlists || !(self.albums || self.artists || self.podcasts)
+            }
+            LibraryShelf::Albums => self.albums,
+            LibraryShelf::Artists => self.artists,
+            LibraryShelf::Podcasts => self.podcasts,
+        }
+    }
+
+    /// The sections to show, in the sidebar's order.
+    pub fn shelves(&self) -> impl Iterator<Item = LibraryShelf> + '_ {
+        [
+            LibraryShelf::Playlists,
+            LibraryShelf::Albums,
+            LibraryShelf::Artists,
+            LibraryShelf::Podcasts,
+        ]
+        .into_iter()
+        .filter(|shelf| self.offers(*shelf))
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ThemeChoice {
@@ -316,6 +373,9 @@ pub struct Settings {
     pub library_sort: std::collections::BTreeMap<LibraryShelf, LibrarySort>,
     /// Show only playlists owned by the signed-in account in the playlist shelf.
     pub library_by_you: bool,
+    /// Which Library sections, the sort control and the By You filter the
+    /// sidebar offers.
+    pub library_sidebar: LibrarySidebar,
     /// Interface zoom, egui's zoom factor; Ctrl+plus/minus changes it.
     pub zoom: f32,
     /// The Winamp window is open.
@@ -464,6 +524,7 @@ impl Default for Settings {
             sidebar_order: Vec::new(),
             library_sort: std::collections::BTreeMap::new(),
             library_by_you: false,
+            library_sidebar: LibrarySidebar::default(),
             zoom: 1.0,
             winamp_window: false,
             winamp_show_taskbar: true,
@@ -507,6 +568,12 @@ fn default_buffer_ms() -> u32 {
 }
 
 impl Settings {
+    /// The By You filter as it acts: a hidden button means the filter is off,
+    /// while the choice made with it stays saved.
+    pub(crate) fn by_you_active(&self) -> bool {
+        self.library_by_you && self.library_sidebar.by_you
+    }
+
     pub(crate) fn cached_palette(&self) -> Option<crate::theme::Palette> {
         let theme = if self.custom_theme.is_some() {
             self.custom_theme_cache.as_ref()
@@ -902,7 +969,7 @@ impl ManualProxy {
 
 #[cfg(test)]
 mod tests {
-    use super::Settings;
+    use super::{LibraryShelf, LibrarySidebar, Settings};
 
     #[test]
     fn new_profiles_follow_the_system_and_saved_choices_are_preserved() {
@@ -1153,6 +1220,67 @@ mod tests {
         let json = serde_json::to_string(&settings).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(restored.sidebar_compact);
+    }
+
+    #[test]
+    fn the_library_sidebar_shows_everything_unless_told_otherwise() {
+        // A settings file from before the group, and one with part of it.
+        for text in ["{}", r#"{"library_sidebar":{}}"#] {
+            let settings: Settings = serde_json::from_str(text).unwrap();
+            let sidebar = settings.library_sidebar;
+            assert_eq!(sidebar, LibrarySidebar::default());
+            assert!(sidebar.playlists && sidebar.albums && sidebar.artists && sidebar.podcasts);
+            assert!(sidebar.sort && sidebar.by_you);
+            assert_eq!(sidebar.shelves().count(), 4);
+        }
+        let partial: Settings =
+            serde_json::from_str(r#"{"library_sidebar":{"podcasts":false}}"#).unwrap();
+        assert!(!partial.library_sidebar.podcasts);
+        assert!(partial.library_sidebar.albums && partial.library_sidebar.sort);
+
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        settings.library_sidebar.podcasts = false;
+        settings.library_sidebar.sort = false;
+        let json = serde_json::to_string(&settings).unwrap();
+        let restored: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.library_sidebar, settings.library_sidebar);
+    }
+
+    #[test]
+    fn a_sidebar_with_every_section_off_still_offers_playlists() {
+        let none = LibrarySidebar {
+            playlists: false,
+            albums: false,
+            artists: false,
+            podcasts: false,
+            ..LibrarySidebar::default()
+        };
+        assert_eq!(
+            none.shelves().collect::<Vec<_>>(),
+            [LibraryShelf::Playlists]
+        );
+        let no_playlists = LibrarySidebar {
+            playlists: false,
+            ..LibrarySidebar::default()
+        };
+        assert_eq!(
+            no_playlists.shelves().collect::<Vec<_>>(),
+            [
+                LibraryShelf::Albums,
+                LibraryShelf::Artists,
+                LibraryShelf::Podcasts
+            ]
+        );
+    }
+
+    #[test]
+    fn a_hidden_by_you_button_means_the_filter_is_off_but_keeps_the_choice() {
+        let mut settings: Settings = serde_json::from_str("{}").unwrap();
+        settings.library_by_you = true;
+        assert!(settings.by_you_active());
+        settings.library_sidebar.by_you = false;
+        assert!(!settings.by_you_active());
+        assert!(settings.library_by_you, "the choice is kept for later");
     }
 
     #[test]

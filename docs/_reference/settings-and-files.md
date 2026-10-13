@@ -266,6 +266,7 @@ main fields are:
 | `player_bar_vis_click` | `true` | Allow clicks on empty player bar space to cycle visualizer modes |
 | `library_sort` | `{}` | Per-section Library order overrides, since 0.8.0: `library`, `recently_played`, `name`, `recently_added`, `local`, or `spotify`, where supported |
 | `library_by_you` | `false` | Show only playlists owned by the signed-in account, alongside Liked Songs; applies only to the Playlists shelf |
+| `library_sidebar` | all `true` | What the Library offers, as `playlists`, `albums`, `artists`, `podcasts`, `sort` (the order menu) and `by_you` (the By You button). A missing key is on. `podcasts: false` also stops the requests for saved shows and episodes, the audiobook lookup, Home's podcast shelf and shows and episodes in search. A hidden `sort` keeps the order chosen in `library_sort`, and a hidden `by_you` filters nothing. With every section off the Library still shows Playlists |
 | `sidebar_order` | `[]` | Saved local playlist arrangement, including an unpinned Liked Songs, retained when another sort is selected |
 | `pinned_contexts` | `[]` | Local Library pin order; Liked Songs uses `spotifast:liked-songs`, a local key never sent to Spotify |
 | `liked_songs_pinned` | `true` | Keep Liked Songs in the pin block; older settings place it first until moved |

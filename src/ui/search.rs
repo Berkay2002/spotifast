@@ -19,15 +19,26 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     ui.add_space(4.0);
+    // Without podcasts in the Library, no shows or episodes are asked for,
+    // so their chips would only lead to empty lists.
+    let podcasts = app.settings.library_sidebar.podcasts;
+    let podcast_kind =
+        |filter: SearchFilter| matches!(filter, SearchFilter::Podcasts | SearchFilter::Episodes);
+    let current = if !podcasts && podcast_kind(app.search.filter) {
+        SearchFilter::All
+    } else {
+        app.search.filter
+    };
     let labels: Vec<_> = SearchFilter::ALL
         .iter()
+        .filter(|f| podcasts || !podcast_kind(**f))
         .map(|f| (*f, f.label(app.locale)))
         .collect();
     let options: Vec<(SearchFilter, &str)> = labels
         .iter()
         .map(|(filter, label)| (*filter, label.as_ref()))
         .collect();
-    if let Some(filter) = widgets::chips(ui, &palette, &options, app.search.filter) {
+    if let Some(filter) = widgets::chips(ui, &palette, &options, current) {
         app.actions.push(Action::SetSearchFilter(filter));
     }
     ui.add_space(12.0);
@@ -69,7 +80,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         );
         return;
     }
-    match app.search.filter {
+    match current {
         SearchFilter::All => all(app, ui, &results),
         SearchFilter::Songs => songs(app, ui, &results, usize::MAX),
         SearchFilter::Artists => artists_grid(app, ui, &results),

@@ -229,10 +229,13 @@ pub enum ApiRequest {
     Search {
         query: String,
         serial: u64,
+        /// Ask for shows and episodes too.
+        podcasts: bool,
     },
     SearchCatalogue {
         query: String,
         serial: u64,
+        podcasts: bool,
     },
     SearchPlaylists {
         query: String,
@@ -2003,7 +2006,11 @@ impl Worker {
                         )),
                     }
                 }
-                Command::Api(ApiRequest::Search { query, serial }) => self.search(query, serial),
+                Command::Api(ApiRequest::Search {
+                    query,
+                    serial,
+                    podcasts,
+                }) => self.search(query, serial, podcasts),
                 Command::Api(request) => {
                     self.dispatch(request);
                 }
@@ -3978,7 +3985,7 @@ impl Worker {
         }
     }
 
-    fn search(&mut self, query: String, serial: u64) {
+    fn search(&mut self, query: String, serial: u64, podcasts: bool) {
         self.cancel_search();
         if query.is_empty() {
             return;
@@ -3997,9 +4004,17 @@ impl Worker {
                 }));
         }
         let request = if split {
-            ApiRequest::SearchCatalogue { query, serial }
+            ApiRequest::SearchCatalogue {
+                query,
+                serial,
+                podcasts,
+            }
         } else {
-            ApiRequest::Search { query, serial }
+            ApiRequest::Search {
+                query,
+                serial,
+                podcasts,
+            }
         };
         self.search_tasks.push(self.dispatch(request));
     }
@@ -4283,6 +4298,20 @@ where
             (result, false, expired)
         }
     }
+}
+
+/// The kinds a search asks Spotify for. Playlists come from their own
+/// request when the search is split, and shows and episodes are left out
+/// when the Library has no podcasts.
+fn search_types(playlists: bool, podcasts: bool) -> Vec<&'static str> {
+    let mut types = vec!["track", "artist", "album"];
+    if playlists {
+        types.push("playlist");
+    }
+    if podcasts {
+        types.extend(["show", "episode"]);
+    }
+    types
 }
 
 /// Tries the session Home route before the shared fallback and routes other API work.
@@ -4580,19 +4609,21 @@ async fn handle(
             result: routed!(contains(&uris)),
             uris,
         },
-        ApiRequest::Search { query, serial } => ApiResponse::Search {
-            result: routed!(search(
-                &query,
-                &["track", "artist", "album", "playlist", "show", "episode"]
-            )),
+        ApiRequest::Search {
+            query,
+            serial,
+            podcasts,
+        } => ApiResponse::Search {
+            result: routed!(search(&query, &search_types(true, podcasts))),
             query,
             serial,
         },
-        ApiRequest::SearchCatalogue { query, serial } => ApiResponse::Search {
-            result: routed!(search(
-                &query,
-                &["track", "artist", "album", "show", "episode"]
-            )),
+        ApiRequest::SearchCatalogue {
+            query,
+            serial,
+            podcasts,
+        } => ApiResponse::Search {
+            result: routed!(search(&query, &search_types(false, podcasts))),
             query,
             serial,
         },
@@ -7306,6 +7337,22 @@ mod authorization_tests {
     }
 
     #[test]
+    fn a_search_asks_for_shows_and_episodes_only_with_podcasts_on() {
+        assert_eq!(
+            search_types(true, true),
+            ["track", "artist", "album", "playlist", "show", "episode"]
+        );
+        assert_eq!(
+            search_types(false, true),
+            ["track", "artist", "album", "show", "episode"]
+        );
+        assert_eq!(
+            search_types(true, false),
+            ["track", "artist", "album", "playlist"]
+        );
+    }
+
+    #[test]
     fn search_requests_keep_their_scope_when_personal_readiness_changes() {
         let (_runtime, worker, _) = worker("search-routing");
         for ready in [false, true] {
@@ -7325,6 +7372,7 @@ mod authorization_tests {
                     &ApiRequest::Search {
                         query: "q".into(),
                         serial: 1,
+                        podcasts: true,
                     }
                 ),
                 Operation::PlaylistSearch
@@ -7335,6 +7383,7 @@ mod authorization_tests {
                     &ApiRequest::SearchCatalogue {
                         query: "q".into(),
                         serial: 1,
+                        podcasts: true,
                     }
                 ),
                 Operation::CatalogSearch
@@ -7360,13 +7409,13 @@ mod authorization_tests {
                 worker
                     .api
                     .set_state(ApiSource::Shared, SessionState::Authorizing);
-                worker.search("old".into(), 1);
+                worker.search("old".into(), 1, true);
                 tokio::task::yield_now().await;
                 let old = worker.search_tasks[0].clone();
                 assert!(!old.is_finished(), "old search waits for shared access");
                 match cancel {
-                    0 => worker.search("new".into(), 2),
-                    1 => worker.search(String::new(), 2),
+                    0 => worker.search("new".into(), 2, true),
+                    1 => worker.search(String::new(), 2, true),
                     _ => worker.sign_out(),
                 }
                 tokio::task::yield_now().await;
