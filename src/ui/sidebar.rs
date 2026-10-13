@@ -2321,6 +2321,47 @@ mod ordering_tests {
         app.backend.shutdown();
     }
 
+    /// With only a rootlist, and no Web API library, the sidebar still shows
+    /// its folders and every playlist the rootlist names, once each.
+    #[test]
+    fn a_rootlist_without_a_web_api_library_still_fills_the_sidebar() {
+        use crate::player::RootlistEntry;
+        let mut app = ownership_app("rootlist-only");
+        app.library.playlists = Loadable::Loading;
+        app.rootlist = vec![
+            RootlistEntry::Playlist(uri("a")),
+            RootlistEntry::FolderStart {
+                id: "folder".into(),
+                name: "Folder".into(),
+            },
+            RootlistEntry::Playlist(uri("b")),
+            RootlistEntry::FolderEnd,
+            RootlistEntry::Playlist(uri("a")),
+        ];
+        app.settings
+            .library_sort
+            .insert(Filter::Playlists, LibrarySort::Spotify);
+        assert!(projected(&app, "").iter().all(|entry| entry.liked));
+
+        app.list_rootlist_playlists();
+        let entries = projected(&app, "");
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.folder.is_some())
+                .count(),
+            1
+        );
+        assert_eq!(
+            ids(&entries)
+                .into_iter()
+                .filter(|id| !id.is_empty())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        app.backend.shutdown();
+    }
+
     /// Ensure the flat owned view reveals matching rows inside collapsed folders
     /// and disabling it restores the tree without changing folder expansion state.
     #[test]

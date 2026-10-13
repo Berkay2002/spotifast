@@ -2085,6 +2085,7 @@ impl App {
                             });
                             self.session_dirty = true;
                         }
+                        self.list_rootlist_playlists();
                     }
                     Err(error) => log::warn!("rootlist unavailable: {error}"),
                 },
@@ -2295,6 +2296,11 @@ impl App {
                         || !self.home.made_for_you_session_requested)
                 {
                     self.load_made_for_you(false);
+                }
+                if became_ready && !self.library.playlists_whole {
+                    // The rootlist is read after a whole Web API list; with
+                    // the shared app turned away, the session shows it first.
+                    self.backend.send(Command::Rootlist);
                 }
                 self.replay_queued_play();
             }
@@ -4164,13 +4170,14 @@ impl App {
             self.restore_home(cached);
         }
         if let Some(mut playlists) = playlists
-            && self.library.playlists.get().is_none()
+            && (self.library.playlists.get().is_none() || self.library.playlists_from_rootlist)
         {
             for playlist in &mut playlists {
                 self.reconcile_playlist_cover(&playlist.id, &mut playlist.images);
             }
             self.library.playlists = Loadable::Loaded(playlists);
             self.library.playlists_whole = true;
+            self.library.playlists_from_rootlist = false;
             self.fill_blank_playlists();
             if self.library.playlists_loading_since.is_some() {
                 // The load on its way, still before its first page, now
@@ -4180,6 +4187,44 @@ impl App {
             self.apply_playlist_edits();
             self.note_listed_playlists();
         }
+    }
+
+    /// Lists the rootlist's playlists blank while the Web API has listed
+    /// none, so the streaming session reads each header and the sidebar
+    /// fills even when the shared app is rate limited. The Web API's whole
+    /// list, or the disk cache, replaces it.
+    pub(crate) fn list_rootlist_playlists(&mut self) {
+        if self.library.playlists.get().is_some() && !self.library.playlists_from_rootlist {
+            return;
+        }
+        let mut seen = HashSet::new();
+        let blanks: Vec<Playlist> = self
+            .rootlist
+            .iter()
+            .filter_map(|row| match row {
+                crate::player::RootlistEntry::Playlist(uri) => uri
+                    .strip_prefix("spotify:playlist:")
+                    .filter(|_| seen.insert(uri.as_str()))
+                    .map(|id| Playlist {
+                        id: id.to_owned(),
+                        uri: uri.clone(),
+                        ..Playlist::default()
+                    }),
+                _ => None,
+            })
+            .collect();
+        if blanks.is_empty() {
+            return;
+        }
+        self.library.playlists = Loadable::Loaded(blanks);
+        self.library.playlists_whole = false;
+        self.library.playlists_from_rootlist = true;
+        if self.library.playlists_loading_since.is_some() {
+            // The load on its way refreshes this list, as it does a cached one.
+            self.library.playlists_incoming = Some(Vec::new());
+        }
+        self.fill_blank_playlists();
+        self.apply_playlist_edits();
     }
 
     /// When each kind of background work under way began: refreshing the
@@ -6062,6 +6107,7 @@ impl App {
                             false
                         }
                         None => {
+                            self.library.playlists_from_rootlist = false;
                             match &mut self.library.playlists {
                                 Loadable::Loaded(existing) if offset > 0 => {
                                     existing.extend(page.items)
@@ -6088,6 +6134,7 @@ impl App {
                         let library = &mut self.library;
                         if let Some(incoming) = library.playlists_incoming.take() {
                             library.playlists = Loadable::Loaded(incoming);
+                            library.playlists_from_rootlist = false;
                         }
                         library.playlists_whole = true;
                         library.playlists_loading_since = None;
@@ -6125,6 +6172,8 @@ impl App {
                         log::warn!("could not refresh the playlist list: {error}");
                     } else if offset == 0 {
                         library.playlists = Loadable::Failed(error.to_string());
+                        // The rootlist still names them; the session reads them.
+                        self.list_rootlist_playlists();
                     } else {
                         self.toast_error(
                             // Translators: {error} is an error message.
@@ -13283,6 +13332,93 @@ mod tests {
                 vec!["a".into(), "b".into(), "c".into()]
             )]
         );
+    }
+
+    fn rootlist_of(ids: &[&str]) -> crate::player::Rootlist {
+        crate::player::Rootlist {
+            entries: ids
+                .iter()
+                .map(|id| crate::player::RootlistEntry::Playlist(format!("spotify:playlist:{id}")))
+                .collect(),
+            editable: Default::default(),
+        }
+    }
+
+    /// With the shared app turned away the library list never arrived and
+    /// the sidebar stayed empty. The rootlist, which the streaming session
+    /// reads without that quota, names the playlists: they are listed blank
+    /// once each, take their session headers, are replaced by a whole Web
+    /// API list, and are never saved as the library.
+    #[test]
+    fn the_rootlist_lists_the_playlists_while_the_web_api_is_turned_away() {
+        let mut app = listener_app();
+        app.load_playlists();
+        assert!(app.library.playlists.is_loading());
+
+        app.handle_backend_events(vec![Event::Rootlist {
+            result: Ok(rootlist_of(&["a", "b", "a"])),
+        }]);
+        assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b"]));
+        assert_eq!(
+            app.playlist_headers_requested,
+            HashSet::from(["a".to_string(), "b".to_string()])
+        );
+        assert!(!app.library.playlists_whole);
+
+        // The shared app's refusal leaves them shown, and asks again later.
+        app.handle_api(ApiResponse::MyPlaylists {
+            offset: 0,
+            generation: app.library.playlists_generation,
+            result: Err(crate::api::ApiError::RateLimited),
+        });
+        assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b"]));
+        assert!(app.library.playlists_retry_at.is_some());
+
+        app.handle_backend_events(vec![Event::PlaylistHeader(Box::new(Playlist {
+            id: "a".into(),
+            name: "Mix".into(),
+            owner: crate::api::models::Owner {
+                id: Some("alice".into()),
+                ..Default::default()
+            },
+            ..Playlist::default()
+        }))]);
+        let entry = app.library_entry("a").unwrap();
+        assert_eq!(entry.name, "Mix");
+        assert!(entry.owned_by("alice"));
+        assert!(stored_playlists(&app).is_empty(), "nothing whole to save");
+
+        app.load_playlists();
+        app.handle_api(ApiResponse::MyPlaylists {
+            offset: 0,
+            generation: app.library.playlists_generation,
+            result: Ok(playlist_page(&["a", "b", "c"], 0, 3)),
+        });
+        assert_eq!(listed_playlists(&app), playlist_ids(&["a", "b", "c"]));
+        assert!(app.library.playlists_whole);
+        assert!(!app.library.playlists_from_rootlist);
+    }
+
+    /// A refusal that arrives after the rootlist, or a rootlist remembered
+    /// from the last run, lists the same; a cached list that arrives later
+    /// is richer and replaces it.
+    #[test]
+    fn a_cached_list_replaces_one_built_from_the_rootlist() {
+        let mut app = listener_app();
+        app.rootlist = rootlist_of(&["a"]).entries;
+        app.load_playlists();
+        app.handle_api(ApiResponse::MyPlaylists {
+            offset: 0,
+            generation: app.library.playlists_generation,
+            result: Err(crate::api::ApiError::RateLimited),
+        });
+        assert_eq!(listed_playlists(&app), playlist_ids(&["a"]));
+        assert!(app.library.playlists_from_rootlist);
+
+        app.receive_account_caches("alice", 7, cached_playlists(&["x", "y"]), None);
+        assert_eq!(listed_playlists(&app), playlist_ids(&["x", "y"]));
+        assert!(app.library.playlists_whole);
+        assert!(!app.library.playlists_from_rootlist);
     }
 
     /// A list Spotify already answered with is newer than any cache.
