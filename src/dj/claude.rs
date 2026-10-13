@@ -28,8 +28,11 @@ use std::time::{Duration, Instant};
 const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 /// An interrupt the child has not answered by now is a kill.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
-/// The CLI's own limit for one MCP call. The app answers a call well within this (`session.rs`).
-const MCP_TOOL_TIMEOUT_MS: &str = "60000";
+/// The CLI's own limit for one MCP call. The app answers a call well within this (`session.rs`);
+/// the longest wait is a call held for the listener's approval.
+const MCP_TOOL_TIMEOUT_MS: &str = "300000";
+/// Claude Code's own web tools, which are the only built-ins the DJ may be given.
+const WEB_TOOLS: &str = "WebSearch,WebFetch";
 
 /// Runs a validated call against the app and waits for its answer. The flag is the turn's cancel:
 /// a wait ends early when it is set.
@@ -71,6 +74,7 @@ pub fn build_args(
     model: Option<&str>,
     effort: Option<&str>,
     resume: Option<&str>,
+    web: bool,
 ) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -80,9 +84,10 @@ pub fn build_args(
         "stream-json",
         "--verbose",
         "--include-partial-messages",
-        // none of Claude Code's own tools: it can only do what Spotifast's server offers
+        // none of Claude Code's own tools but (when allowed) its web search: it can only do what
+        // Spotifast's server offers, and look things up
         "--tools",
-        "",
+        if web { WEB_TOOLS } else { "" },
         "--strict-mcp-config",
         "--mcp-config",
     ]
@@ -92,7 +97,11 @@ pub fn build_args(
     a.push(cfg.to_string_lossy().into_owned());
     for s in [
         "--allowedTools",
-        ALLOWED_TOOLS,
+        if web {
+            concat!("mcp__spotifast__*", ",", "WebSearch,WebFetch")
+        } else {
+            ALLOWED_TOOLS
+        },
         // no user, project or local settings: no hooks, no plugins, no CLAUDE.md of the user's
         "--setting-sources",
         "",
@@ -320,6 +329,7 @@ struct Running {
     dir: PathBuf,
     model: Option<String>,
     effort: Option<String>,
+    web: bool,
 }
 
 impl Running {
@@ -506,6 +516,7 @@ impl ClaudeProvider {
         self: &Arc<Self>,
         model: Option<&str>,
         effort: Option<&str>,
+        web: bool,
     ) -> Result<Arc<Proc>, Failure> {
         let _start = self.start.lock().unwrap();
         if self.closed.load(Ordering::SeqCst) {
@@ -513,7 +524,11 @@ impl ClaudeProvider {
         }
         let mut st = self.state.lock().unwrap();
         if let Some(r) = &st.running {
-            if r.proc.is_alive() && r.model.as_deref() == model && r.effort.as_deref() == effort {
+            if r.proc.is_alive()
+                && r.model.as_deref() == model
+                && r.effort.as_deref() == effort
+                && r.web == web
+            {
                 return Ok(r.proc.clone());
             }
         }
@@ -545,7 +560,13 @@ impl ClaudeProvider {
             return Err(Failure::new(format!("Could not prepare Claude: {e}")));
         }
         let mut args = l.args.clone();
-        args.extend(build_args(&cfg, model, effort, st.session_id.as_deref()));
+        args.extend(build_args(
+            &cfg,
+            model,
+            effort,
+            st.session_id.as_deref(),
+            web,
+        ));
         match Proc::spawn(&l.program, &args, &self.env_for_child(), &dir) {
             Ok((proc, rx)) => {
                 *self.rx.lock().unwrap() = Some(rx);
@@ -555,6 +576,7 @@ impl ClaudeProvider {
                     dir,
                     model: model.map(str::to_string),
                     effort: effort.map(str::to_string),
+                    web,
                 });
                 Ok(proc)
             }
@@ -584,7 +606,7 @@ impl ClaudeProvider {
         sink(ChatEvent::Status {
             phase: "connecting",
         });
-        let proc = self.ensure_child(model.as_deref(), effort.as_deref())?;
+        let proc = self.ensure_child(model.as_deref(), effort.as_deref(), req.web)?;
         if self.cancel.load(Ordering::SeqCst) {
             return Ok(ChatEvent::Cancelled);
         }
@@ -822,6 +844,20 @@ impl Provider for ClaudeProvider {
         }
     }
 
+    fn session(&self) -> Option<String> {
+        self.state.lock().unwrap().session_id.clone()
+    }
+
+    fn set_session(&self, id: Option<String>) {
+        let id = id.filter(|id| is_session_id(id));
+        let changed = self.state.lock().unwrap().session_id != id;
+        if changed && !self.busy.load(Ordering::SeqCst) {
+            // the running child holds the old conversation: the next turn starts one that resumes
+            self.drop_child();
+            self.state.lock().unwrap().session_id = id;
+        }
+    }
+
     fn shutdown(&self) {
         self.cancel.store(true, Ordering::SeqCst);
         self.drop_child();
@@ -858,6 +894,7 @@ mod tests {
             Some("sonnet"),
             Some("low"),
             Some(UUID),
+            false,
         );
         let at = |flag: &str| {
             a.iter()
@@ -879,12 +916,28 @@ mod tests {
     }
 
     #[test]
+    fn web_search_is_the_only_built_in_tool_and_only_when_allowed() {
+        let at = |a: &[String], flag: &str| a.iter().position(|x| x == flag).unwrap();
+        let off = build_args(Path::new("c.json"), None, None, None, false);
+        assert_eq!(off[at(&off, "--tools") + 1], "");
+        assert_eq!(off[at(&off, "--allowedTools") + 1], "mcp__spotifast__*");
+        let on = build_args(Path::new("c.json"), None, None, None, true);
+        assert_eq!(on[at(&on, "--tools") + 1], "WebSearch,WebFetch");
+        assert_eq!(
+            on[at(&on, "--allowedTools") + 1],
+            "mcp__spotifast__*,WebSearch,WebFetch"
+        );
+        assert!(!on.iter().any(|x| x.contains("Bash") || x.contains("Edit")));
+    }
+
+    #[test]
     fn values_that_could_be_options_never_reach_the_command_line() {
         let a = build_args(
             Path::new("c.json"),
             Some("--bare"),
             Some("--bare"),
             Some("--dangerously-skip-permissions"),
+            false,
         );
         // `--model=--bare` is one argument: a value, not an option
         assert!(
@@ -900,6 +953,7 @@ mod tests {
             Some("default"),
             Some("ultra"),
             Some("not-a-uuid"),
+            false,
         );
         assert!(!a.iter().any(|x| x.starts_with("--model")
             || x.starts_with("--effort")

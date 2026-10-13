@@ -276,6 +276,14 @@ pub struct Settings {
     pub dj_model: String,
     /// Claude Code effort the DJ asks for (see `crate::dj::EFFORTS`).
     pub dj_effort: String,
+    /// The DJ asks before it changes the library or a playlist (likes, playlists, schedules).
+    pub dj_confirm_writes: bool,
+    /// The DJ may search the web for facts about music (Claude Code's own web search).
+    pub dj_web: bool,
+    /// The DJ watches the queue and tops it up when it runs low, without being asked.
+    pub dj_autopilot: bool,
+    /// Model for the DJ's own turns (autopilot, schedules); empty means the one above.
+    pub dj_background_model: String,
     /// The playing album's art docked large at the sidebar's bottom.
     pub art_expanded: bool,
     /// Use compact single-line rows without cover art in the sidebar.
@@ -450,6 +458,10 @@ impl Default for Settings {
             dj_enabled: true,
             dj_model: "sonnet".to_string(),
             dj_effort: "low".to_string(),
+            dj_confirm_writes: true,
+            dj_web: true,
+            dj_autopilot: false,
+            dj_background_model: String::new(),
             art_expanded: false,
             sidebar_compact: false,
             sidebar_grid: false,

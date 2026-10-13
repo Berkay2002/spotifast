@@ -5,8 +5,11 @@
 //! cut. One result per line, the URI last, so the model can copy it back exactly.
 
 use super::tools::Kind;
-use crate::api::models::{Artist, PlayHistory, PlayableItem, Playlist, SearchResults, Track};
+use crate::api::models::{
+    Album, Artist, Device, PlayHistory, PlayableItem, Playlist, PlaylistItem, SearchResults, Track,
+};
 use crate::app::NowPlaying;
+use crate::player::RepeatMode;
 
 /// The longest a name is allowed to be in a tool result.
 const NAME_MAX: usize = 100;
@@ -220,6 +223,190 @@ pub fn library(top_artists: &[Artist], top_tracks: &[Track], playlists: &[Playli
     } else {
         out.trim_end().to_string()
     }
+}
+
+/// A numbered list of songs under a heading, `offset` rows in, with the size of the whole list.
+pub fn tracks(title: &str, tracks: &[Track], total: Option<u32>, offset: u32) -> String {
+    let shown: Vec<&Track> = tracks.iter().filter(|t| playable(t)).collect();
+    let mut out = match total {
+        Some(total) => format!("{title} ({total} songs)\n"),
+        None => format!("{title}\n"),
+    };
+    if shown.is_empty() {
+        out.push_str("No playable songs.");
+        return out;
+    }
+    for (n, t) in shown.iter().enumerate() {
+        out.push_str(&format!("{}. {}\n", offset as usize + n + 1, track(t)));
+    }
+    if let Some(total) = total {
+        let end = offset as usize + tracks.len();
+        if end < total as usize {
+            out.push_str(&format!(
+                "(more: call again with offset {end}; {} left)",
+                total as usize - end
+            ));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+/// A playlist's header and one page of its songs.
+pub fn playlist_rows(
+    name: &str,
+    owner: &str,
+    total: u32,
+    items: &[PlaylistItem],
+    offset: u32,
+) -> String {
+    let mut out = format!(
+        "Playlist \"{}\" by {} ({total} items)\n",
+        clean(name),
+        if owner.is_empty() {
+            "unknown".to_string()
+        } else {
+            clean(owner)
+        }
+    );
+    let rows: Vec<String> = items
+        .iter()
+        .filter_map(|i| match i.playable()? {
+            PlayableItem::Track(t) if playable(t) => Some(track(t)),
+            _ => None,
+        })
+        .collect();
+    if rows.is_empty() {
+        out.push_str("No playable songs in this range.");
+        return out;
+    }
+    for (n, row) in rows.iter().enumerate() {
+        out.push_str(&format!("{}. {row}\n", offset as usize + n + 1));
+    }
+    let end = offset as usize + items.len();
+    if end < total as usize {
+        out.push_str(&format!(
+            "(more: call again with offset {end}; {} left)",
+            total as usize - end
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+pub fn albums(albums: &[Album]) -> String {
+    if albums.is_empty() {
+        return "No albums.".to_string();
+    }
+    albums
+        .iter()
+        .map(|a| {
+            let year = a.year().map(|y| format!(" ({y})")).unwrap_or_default();
+            let kind = a.album_type.as_deref().unwrap_or("album");
+            format!("- {}{year} [{kind}] | {}", clean(&a.name), a.uri)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+pub fn artists(artists: &[Artist]) -> String {
+    if artists.is_empty() {
+        return "Nothing yet. Spotify builds this from listening history.".to_string();
+    }
+    artists
+        .iter()
+        .enumerate()
+        .map(|(n, a)| format!("{}. {}", n + 1, artist(a)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Everything known about each song, one per line.
+pub fn track_info(tracks: &[Track]) -> String {
+    if tracks.is_empty() {
+        return "No such songs.".to_string();
+    }
+    tracks
+        .iter()
+        .map(|t| {
+            let mut line = track(t);
+            if let Some(date) = t.album.as_ref().and_then(|a| a.release_date.as_deref()) {
+                line.push_str(&format!(" | released {date}"));
+            }
+            if let Some(p) = t.popularity {
+                line.push_str(&format!(" | popularity {p}"));
+            }
+            if t.explicit {
+                line.push_str(" | explicit");
+            }
+            format!("- {line}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn repeat_word(mode: RepeatMode) -> &'static str {
+    match mode {
+        RepeatMode::Off => "off",
+        RepeatMode::Context => "context",
+        RepeatMode::Track => "track",
+    }
+}
+
+/// Transport state: playing or paused, shuffle, repeat, volume and device.
+pub fn playback_state(n: Option<&NowPlaying>) -> String {
+    let Some(n) = n.filter(|n| !n.resuming) else {
+        return "Nothing is playing.".to_string();
+    };
+    format!(
+        "{}. Shuffle {}, repeat {}, volume {}%{}. Device: {}. {} of {}.",
+        if n.playing { "Playing" } else { "Paused" },
+        if n.shuffle { "on" } else { "off" },
+        repeat_word(n.repeat),
+        n.volume_percent,
+        if n.can_set_volume {
+            ""
+        } else {
+            " (this device does not take volume changes)"
+        },
+        n.device_name
+            .as_deref()
+            .map(clean)
+            .unwrap_or_else(|| "this computer".into()),
+        minutes(n.position_ms),
+        minutes(n.duration_ms),
+    )
+}
+
+pub fn devices(devices: &[Device]) -> String {
+    let rows: Vec<String> = devices
+        .iter()
+        .filter(|d| d.id.is_some() && !d.is_restricted)
+        .map(|d| {
+            format!(
+                "- {} ({}){} | {}",
+                clean(&d.name),
+                clean(&d.kind),
+                if d.is_active { " [active]" } else { "" },
+                d.id.as_deref().unwrap_or_default()
+            )
+        })
+        .collect();
+    if rows.is_empty() {
+        "No devices are available. Open Spotify on a device to list it.".to_string()
+    } else {
+        rows.join("\n")
+    }
+}
+
+/// The remembered notes, numbered.
+pub fn memory(notes: &[String]) -> String {
+    if notes.is_empty() {
+        return "Nothing is remembered yet.".to_string();
+    }
+    notes
+        .iter()
+        .map(|n| format!("- {}", clean(n)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]

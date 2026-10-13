@@ -1307,6 +1307,12 @@ pub enum Action {
     DjCancel,
     /// Ask Claude Code again whether it is installed and signed in.
     DjCheck,
+    /// Let the DJ make the change it asked for (by approval id) or turn it down.
+    DjApprove(u64),
+    DjDeny(u64),
+    DjNewChat,
+    DjOpenChat(u64),
+    DjDeleteChat(u64),
     Quit,
 }
 

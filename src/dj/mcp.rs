@@ -439,18 +439,26 @@ mod tests {
             .iter()
             .filter_map(|x| x["name"].as_str())
             .collect();
-        assert_eq!(
-            names,
-            [
-                "search",
-                "now_playing",
-                "queue",
-                "recent_plays",
-                "library_summary",
-                "queue_tracks",
-                "play",
-                "skip"
-            ]
+        // the server lists exactly the registry, in its order
+        let expected: Vec<String> = crate::dj::tools::registry()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        assert_eq!(names, expected);
+        for name in [
+            "search",
+            "play",
+            "add_to_playlist",
+            "remember",
+            "schedule_task",
+        ] {
+            assert!(names.contains(&name), "{name} is missing");
+        }
+        // nothing that deletes a playlist or the account's data is offered
+        assert!(
+            !names
+                .iter()
+                .any(|n| n.contains("delete") || n.contains("unfollow"))
         );
         let call = rpc(&json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"skip","arguments":{}}}), &t, &handler).unwrap();
         assert_eq!(call["result"]["isError"], false);

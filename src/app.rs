@@ -609,6 +609,7 @@ pub struct App {
     pub demo_settings_filter: Option<String>,
     dj_searches: HashMap<u64, dj::DjSearch>,
     dj_search_serial: u64,
+    dj_state: dj::DjState,
     last_album_queue: Option<(String, Instant)>,
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
@@ -1066,6 +1067,7 @@ impl App {
             demo_settings_filter: None,
             dj_searches: HashMap::new(),
             dj_search_serial: 0,
+            dj_state: dj::DjState::default(),
             last_album_queue: None,
             rootlist: Vec::new(),
             rootlist_cache: session.rootlist.clone(),
@@ -1093,6 +1095,7 @@ impl App {
             pixels_per_point: 1.0,
         };
         app.local.volume = app.settings.volume;
+        app.dj.attach(&app.dirs.config);
         // What was played here is on disk and needs nothing from the
         // network, so the tab has rows before Spotify has answered.
         app.rebuild_recents();
@@ -6387,6 +6390,9 @@ impl App {
                 }
                 self.request_user_names(adders);
             }
+            ApiResponse::PlaylistCreated(result) if self.dj_state.create.is_some() => {
+                self.dj_playlist_created(result);
+            }
             ApiResponse::PlaylistCreated(result) => {
                 self.playlist_busy = false;
                 match result {
@@ -6854,6 +6860,7 @@ impl App {
                 }
             }
             ApiResponse::DjSearch { serial, result } => self.dj_search_response(serial, result),
+            ApiResponse::DjRead { serial, result } => self.dj_read_response(serial, result),
             ApiResponse::PlaySearch {
                 query,
                 serial,
@@ -10632,7 +10639,15 @@ impl App {
                     );
                 }
             }
-            Action::DjSend | Action::DjStart | Action::DjCancel | Action::DjCheck => {
+            Action::DjSend
+            | Action::DjStart
+            | Action::DjCancel
+            | Action::DjCheck
+            | Action::DjApprove(_)
+            | Action::DjDeny(_)
+            | Action::DjNewChat
+            | Action::DjOpenChat(_)
+            | Action::DjDeleteChat(_) => {
                 self.dj_action(&action);
             }
             Action::Quit => {
