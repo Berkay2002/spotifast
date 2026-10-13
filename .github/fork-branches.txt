@@ -8,3 +8,4 @@ feat/visualizers
 ui/shelf-arrows
 feat/library-sections
 feat/ai-dj
+feat/transitions
