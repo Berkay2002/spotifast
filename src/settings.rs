@@ -1018,7 +1018,11 @@ mod tests {
         let decoded: Settings =
             serde_json::from_str(&serde_json::to_string(&automix).unwrap()).unwrap();
         assert_eq!(
-            (decoded.transitions, decoded.crossfade_secs, decoded.mix_transitions),
+            (
+                decoded.transitions,
+                decoded.crossfade_secs,
+                decoded.mix_transitions
+            ),
             (crate::transition::Mode::Automix, 9, false)
         );
     }

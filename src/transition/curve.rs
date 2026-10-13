@@ -9,6 +9,11 @@
 
 use protobuf::CodedInputStream;
 
+/// Bounds on a decoded curve. Recipes come from playlists anyone can make,
+/// so a curve is evaluated on the audio thread only within these.
+const MAX_PIECES: usize = 64;
+const MAX_POINTS: usize = 64;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Piece {
     pub start: f32,
@@ -86,7 +91,10 @@ impl Curve {
         let mut input = CodedInputStream::from_bytes(bytes);
         while let Some(tag) = input.read_raw_tag_or_eof()? {
             match tag {
-                10 => curve.pieces.push(decode_piece(&input.read_bytes()?)?),
+                10 => {
+                    anyhow::ensure!(curve.pieces.len() < MAX_PIECES, "too many curve pieces");
+                    curve.pieces.push(decode_piece(&input.read_bytes()?)?);
+                }
                 _ => protobuf::rt::skip_field_for_tag(tag, &mut input)?,
             }
         }
@@ -114,6 +122,7 @@ fn decode_piece(bytes: &[u8]) -> anyhow::Result<Piece> {
                         _ => protobuf::rt::skip_field_for_tag(tag, &mut input)?,
                     }
                 }
+                anyhow::ensure!(piece.points.len() < MAX_POINTS, "too many curve points");
                 piece.points.push((x, y));
             }
             17 => piece.start = input.read_double()? as f32,
@@ -121,6 +130,11 @@ fn decode_piece(bytes: &[u8]) -> anyhow::Result<Piece> {
             _ => protobuf::rt::skip_field_for_tag(tag, &mut input)?,
         }
     }
+    let finite = [piece.start, piece.end]
+        .into_iter()
+        .chain(piece.points.iter().flat_map(|&(x, y)| [x, y]))
+        .all(f32::is_finite);
+    anyhow::ensure!(finite, "curve value out of range");
     Ok(piece)
 }
 
@@ -239,5 +253,28 @@ mod tests {
         assert_eq!(curve.pieces.len(), 1);
         assert!(close(curve.eval(0.25), 1.0));
         assert!(close(curve.eval(0.75), 0.5));
+    }
+
+    #[test]
+    fn a_curve_with_non_finite_values_or_too_many_pieces_is_rejected() {
+        let mut point = vec![0x09];
+        point.extend(0.0f64.to_le_bytes());
+        point.push(0x11);
+        point.extend(f64::NAN.to_le_bytes());
+        let mut piece = vec![0x0a, point.len() as u8];
+        piece.extend(&point);
+        let mut bytes = vec![0x0a, piece.len() as u8];
+        bytes.extend(&piece);
+        assert!(Curve::decode(&bytes).is_err());
+        // Too large for an f32: infinite once narrowed.
+        let mut piece = vec![0x11];
+        piece.extend(1e300f64.to_le_bytes());
+        let mut bytes = vec![0x0a, piece.len() as u8];
+        bytes.extend(&piece);
+        assert!(Curve::decode(&bytes).is_err());
+        let many: Vec<u8> = std::iter::repeat_n([0x0a, 0x00], MAX_PIECES + 1)
+            .flatten()
+            .collect();
+        assert!(Curve::decode(&many).is_err());
     }
 }
