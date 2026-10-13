@@ -5,3 +5,4 @@ perf/prefetch
 fix/session-library
 ui/sidebar-tint
 feat/visualizers
+ui/shelf-arrows
