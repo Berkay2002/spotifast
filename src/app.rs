@@ -11603,6 +11603,7 @@ pub fn engine_config(
         audio_cache_limit: Some(settings.audio_cache_mb.max(64) * 1024 * 1024),
         proxy,
         prefetch_metered: Default::default(),
+        prefetch_bucket: Default::default(),
     }
 }
 

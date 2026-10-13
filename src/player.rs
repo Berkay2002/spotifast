@@ -65,6 +65,8 @@ pub struct EngineConfig {
     /// Whether the connection is metered; the prefetcher waits while it is.
     /// Shared with the app, which keeps it current.
     pub prefetch_metered: Arc<std::sync::atomic::AtomicBool>,
+    /// The prefetch budget; shared so an engine restart does not refill it.
+    pub prefetch_bucket: crate::prefetch::SharedBucket,
 }
 
 impl EngineConfig {
@@ -395,6 +397,7 @@ impl Engine {
             player.get_player_event_channel(),
             config.bitrate(),
             Arc::clone(&config.prefetch_metered),
+            Arc::clone(&config.prefetch_bucket),
             config.audio_cache_limit.unwrap_or(0),
         ));
 
@@ -1672,6 +1675,7 @@ mod tests {
             audio_cache_limit: None,
             proxy: crate::settings::ProxyConfig::Off,
             prefetch_metered: Arc::default(),
+            prefetch_bucket: Arc::default(),
         };
         let id = config.device_id();
         assert_eq!(id.len(), 40);

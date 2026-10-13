@@ -3,15 +3,15 @@
 //! Mirrors Spotify's `SlidingWindowPrefetchStrategy`: a window of upcoming
 //! tracks that grows when tracks are listened to and shrinks when the user
 //! skips or switches context, plus a token bucket that bounds download volume.
-//! `Window` and `Bucket` do no I/O and read no clock; time is always passed in,
+//! `Window`, `Bucket` and `Core` do no I/O and read no clock; time is always passed in,
 //! so they are unit-testable. `run` is the task that drives them: it follows the
 //! player's events and downloads upcoming tracks into librespot's audio cache,
 //! which the player then picks up (`AudioFile::open` returns a cached file).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use librespot_audio::{AudioFile, StreamLoaderController};
@@ -36,8 +36,11 @@ pub const MAX_TRACK_S: u64 = 420;
 pub const SETTLE: Duration = Duration::from_secs(5);
 /// Retry delay when blocked (bucket empty, priority gate).
 pub const RETRY: Duration = Duration::from_secs(10);
-/// A prefetch not finished after this long is dropped and marked failed.
-pub const INFLIGHT_TIMEOUT: Duration = Duration::from_secs(120);
+/// A prefetch that received no bytes for this long is stalled and dropped.
+pub const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// After a stall, prefetching stays off at least this long, and until the
+/// current track changes, so a dead link is not hammered.
+pub const SUSPEND: Duration = Duration::from_secs(10 * 60);
 /// Upper bound of the token bucket.
 pub const BUCKET_CAP_MAX: u64 = 100 * 1024 * 1024;
 /// Bucket refill: `REFILL_BYTES` per `REFILL_PERIOD`.
@@ -194,6 +197,12 @@ impl Bucket {
         need as f64 <= self.cap
     }
 
+    /// Change the capacity; the tokens never grow by it, and shrink if above it.
+    pub fn set_cap(&mut self, cap: u64) {
+        self.cap = cap as f64;
+        self.tokens = self.tokens.min(self.cap);
+    }
+
     /// Refill up to `now`, then spend `need` bytes if available.
     pub fn take(&mut self, need: u64, now: Instant) -> bool {
         let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
@@ -208,61 +217,378 @@ impl Bucket {
     }
 }
 
+/// A shared token bucket, so engine restarts and reconnects do not refill it.
+/// Empty until the first prefetcher fills it in.
+pub type SharedBucket = Arc<Mutex<Option<Bucket>>>;
+
+/// Creates the bucket in `shared` (full) the first time; later calls only
+/// adjust its capacity, never its tokens.
+pub fn init_bucket(shared: &SharedBucket, cap: u64, now: Instant) {
+    let mut guard = shared.lock().unwrap_or_else(PoisonError::into_inner);
+    match guard.as_mut() {
+        Some(bucket) => bucket.set_cap(cap),
+        None => *guard = Some(Bucket::new(cap, REFILL_BYTES, REFILL_PERIOD, now)),
+    }
+}
+
+/// What the player reported, reduced to what the prefetch decisions need.
+#[derive(Debug, Clone)]
+pub enum Ev {
+    /// The queue changed. `current` is `None` when nothing is loaded.
+    Queue {
+        current: Option<String>,
+        upcoming: Vec<String>,
+    },
+    /// Loading, playing, paused, position or seek: a track is loaded. `uri` is
+    /// the track as the queue knows it.
+    Playback {
+        uri: String,
+        ms: u64,
+    },
+    /// The player's own preload of this track started.
+    Preloading(String),
+    /// The player loaded a track. `uri` is the track actually played, which
+    /// differs from the queued one when Spotify relinked it.
+    Track {
+        uri: String,
+        len_ms: u64,
+        file: Option<FileId>,
+    },
+    End(String),
+    Stopped,
+}
+
+/// Facts the decision logic reads from the outside world.
+pub struct Env<'a> {
+    pub cache_on: bool,
+    pub metered: bool,
+    /// Whether a file is complete in the audio cache.
+    pub cached: &'a dyn Fn(FileId) -> bool,
+    /// For the download in flight: it finished, and the bytes it holds.
+    pub flight_done: bool,
+    pub flight_bytes: u64,
+}
+
+/// What the I/O shell has to do next.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Action {
+    Wait,
+    /// Drop the download in flight (if any).
+    Drop,
+    /// The download in flight finished.
+    Done,
+    /// Resolve and start downloading this track.
+    Start(String),
+}
+
+#[derive(Debug)]
+struct Flight {
+    uri: String,
+    bytes: u64,
+    progress_at: Instant,
+}
+
+/// The playing track as the player reported it.
+#[derive(Debug)]
+struct Loaded {
+    uri: String,
+    /// The queued uri it was played for, once a playback event named it.
+    orig: Option<String>,
+    len_ms: u64,
+    file: Option<FileId>,
+}
+
+#[derive(Debug)]
+struct Suspension {
+    until: Instant,
+    /// The current track when it started; prefetching waits for another one.
+    track: Option<String>,
+}
+
+/// The prefetch decisions, with no I/O and no clock: events and `Instant`s go
+/// in, `Action`s come out.
+#[derive(Debug)]
+pub struct Core {
+    pub window: Window,
+    /// Failed for now (transient), until `FAILED_TTL` passes.
+    failed: HashMap<String, Instant>,
+    /// Failed for good this session: never retried.
+    permanent: HashSet<String>,
+    /// Files of tracks seen so far, to tell whether one is cached.
+    files: HashMap<String, FileId>,
+    loaded: Option<Loaded>,
+    /// A TrackChanged arrived and the next playback event names its queued uri.
+    await_orig: bool,
+    /// A track is loaded and the player is not stopped.
+    active: bool,
+    active_uri: Option<String>,
+    /// Tracks the player is preloading itself; counted as cached until the
+    /// current track changes.
+    preloaded: HashSet<String>,
+    flight: Option<Flight>,
+    /// Do nothing until then (after a queue change, or while blocked).
+    hold_until: Instant,
+    suspended: Option<Suspension>,
+}
+
+impl Core {
+    pub fn new(now: Instant) -> Self {
+        Self {
+            window: Window::default(),
+            failed: HashMap::new(),
+            permanent: HashSet::new(),
+            files: HashMap::new(),
+            loaded: None,
+            await_orig: false,
+            active: false,
+            active_uri: None,
+            preloaded: HashSet::new(),
+            flight: None,
+            hold_until: now,
+            suspended: None,
+        }
+    }
+
+    pub fn on_event(&mut self, ev: Ev, now: Instant) {
+        match ev {
+            Ev::Queue { current: None, .. } => {
+                self.active = false;
+                self.active_uri = None;
+            }
+            Ev::Queue {
+                current: Some(current),
+                upcoming,
+            } => {
+                let changed = self.window.current() != Some(current.as_str());
+                let before = self.window.size;
+                self.window.update(&current, &upcoming);
+                if changed {
+                    self.preloaded.clear();
+                }
+                self.hold_until = now + SETTLE;
+                if self.window.size != before {
+                    log::debug!("prefetch: window {before} -> {}", self.window.size);
+                }
+            }
+            Ev::Stopped => self.active = false,
+            Ev::End(uri) => {
+                // A gapless successor may already be playing.
+                if self.active_uri.as_deref() == Some(uri.as_str()) {
+                    self.active = false;
+                }
+            }
+            Ev::Playback { uri, ms } => {
+                self.active = true;
+                if self.await_orig {
+                    self.await_orig = false;
+                    self.bind_orig(&uri);
+                }
+                self.window.played(&uri, ms);
+                self.active_uri = Some(uri);
+            }
+            Ev::Track { uri, len_ms, file } => {
+                self.window.duration(&uri, len_ms);
+                if let Some(id) = file {
+                    self.files.insert(uri.clone(), id);
+                }
+                self.loaded = Some(Loaded {
+                    uri,
+                    orig: None,
+                    len_ms,
+                    file,
+                });
+                self.await_orig = true;
+            }
+            Ev::Preloading(uri) => {
+                self.preloaded.insert(uri);
+            }
+        }
+    }
+
+    /// The track queued as `orig` is the one just loaded (it may have been
+    /// relinked to another uri).
+    fn bind_orig(&mut self, orig: &str) {
+        let Some(loaded) = &mut self.loaded else {
+            return;
+        };
+        loaded.orig = Some(orig.to_owned());
+        if loaded.uri != orig {
+            self.window.duration(orig, loaded.len_ms);
+            if let Some(id) = loaded.file {
+                self.files.insert(orig.to_owned(), id);
+            }
+        }
+    }
+
+    /// Whether the download in flight is pointless now (its track is playing,
+    /// left the window, or the player is preloading it). Clears it if so.
+    pub fn cancel_stale(&mut self) -> bool {
+        let stale = self.flight.as_ref().is_some_and(|f| {
+            self.window.current() == Some(f.uri.as_str())
+                || !self.window.in_window(&f.uri)
+                || self.preloaded.contains(&f.uri)
+        });
+        if stale {
+            self.flight = None;
+        }
+        stale
+    }
+
+    fn drop_flight(&mut self) -> Action {
+        if self.flight.take().is_some() {
+            Action::Drop
+        } else {
+            Action::Wait
+        }
+    }
+
+    /// What to do now. Called about once a second and again after a `Start`
+    /// that did not begin a download.
+    pub fn tick(&mut self, env: &Env, now: Instant) -> Action {
+        if !env.cache_on || env.metered || !self.active {
+            return self.drop_flight();
+        }
+        if self.cancel_stale() {
+            return Action::Drop;
+        }
+        if let Some(mut f) = self.flight.take() {
+            if env.flight_done {
+                return Action::Done;
+            }
+            if env.flight_bytes > f.bytes {
+                f.bytes = env.flight_bytes;
+                f.progress_at = now;
+            } else if now.saturating_duration_since(f.progress_at) >= STALL_TIMEOUT {
+                // A slow link that still moves is left alone; a stalled one
+                // would restart the same download forever, so stop for a while.
+                self.failed(&f.uri, false, now);
+                self.suspended = Some(Suspension {
+                    until: now + SUSPEND,
+                    track: self.window.current().map(str::to_owned),
+                });
+                log::debug!("prefetch: stalled on {}, suspended", f.uri);
+                return Action::Drop;
+            }
+            self.flight = Some(f);
+            return Action::Wait;
+        }
+        if let Some(s) = &self.suspended {
+            if now >= s.until && self.window.current() != s.track.as_deref() {
+                self.suspended = None;
+            } else {
+                return Action::Wait;
+            }
+        }
+        if now < self.hold_until || !self.current_cached(env) {
+            return Action::Wait;
+        }
+        let cached = |uri: &str| {
+            self.permanent.contains(uri)
+                || self.preloaded.contains(uri)
+                || self.files.get(uri).is_some_and(|id| (env.cached)(*id))
+        };
+        match self.window.next(cached, &self.failed, now) {
+            Some((_, uri)) => Action::Start(uri),
+            None => Action::Wait,
+        }
+    }
+
+    /// Priority gate: the current track's file must be in the cache first.
+    fn current_cached(&self, env: &Env) -> bool {
+        let Some(current) = self.window.current() else {
+            return false;
+        };
+        if !is_track(current) {
+            return true;
+        }
+        match &self.loaded {
+            Some(l) if l.uri == current || l.orig.as_deref() == Some(current) => {
+                l.file.is_none_or(|id| (env.cached)(id))
+            }
+            _ => false, // its TrackChanged has not arrived yet
+        }
+    }
+
+    /// The shell began downloading `uri`.
+    pub fn started(&mut self, uri: &str, now: Instant) {
+        self.flight = Some(Flight {
+            uri: uri.to_owned(),
+            bytes: 0,
+            progress_at: now,
+        });
+    }
+
+    /// The file `uri` would play is known.
+    pub fn resolved(&mut self, uri: &str, file: FileId) {
+        self.files.insert(uri.to_owned(), file);
+    }
+
+    /// `uri` could not be prefetched: for now, or `permanent` for the session.
+    pub fn failed(&mut self, uri: &str, permanent: bool, now: Instant) {
+        if permanent {
+            self.permanent.insert(uri.to_owned());
+        } else {
+            self.failed.insert(uri.to_owned(), now);
+            // The map only ever needs the last minute.
+            self.failed
+                .retain(|_, at| now.saturating_duration_since(*at) < FAILED_TTL);
+        }
+    }
+
+    /// Blocked (budget empty): look again later.
+    pub fn blocked(&mut self, now: Instant) {
+        self.hold_until = now + RETRY;
+    }
+}
+
+fn is_track(uri: &str) -> bool {
+    uri.starts_with("spotify:track:")
+}
+
 /// How long resolving a track's metadata or opening its download may take.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A download in progress. Dropping it cancels the download.
 struct InFlight {
-    uri: String,
     id: SpotifyId,
+    uri: String,
     file_id: FileId,
     path: PathBuf,
-    started: Instant,
     _file: AudioFile,
-    _ctl: StreamLoaderController,
+    ctl: StreamLoaderController,
 }
 
+/// The I/O shell around `Core`.
 struct Prefetcher {
     session: Session,
     bitrate: Bitrate,
     metered: Arc<AtomicBool>,
-    window: Window,
-    bucket: Bucket,
-    failed: HashMap<String, Instant>,
-    /// Files of tracks seen so far, to tell whether one is cached.
-    files: HashMap<String, FileId>,
-    /// The current track and the file the player will use for it, from its
-    /// TrackChanged (`None` file: nothing playable, so nothing to wait for).
-    current_file: Option<(String, Option<FileId>)>,
-    has_current: bool,
+    bucket: SharedBucket,
+    core: Core,
     inflight: Option<InFlight>,
-    /// Do nothing until then (after a queue change, or while blocked).
-    hold_until: Instant,
 }
 
 /// Follows the player and keeps the audio cache filled with the tracks about
 /// to play. Runs until the event channel closes. `cache_limit` is the audio
-/// cache size in bytes.
+/// cache size in bytes; `bucket` outlives this task so a restart of the engine
+/// does not refill it.
 pub async fn run(
     session: Session,
     mut events: UnboundedReceiver<PlayerEvent>,
     bitrate: Bitrate,
     metered: Arc<AtomicBool>,
+    bucket: SharedBucket,
     cache_limit: u64,
 ) {
     let now = Instant::now();
+    init_bucket(&bucket, bucket_cap(cache_limit), now);
     let mut p = Prefetcher {
         session,
         bitrate,
         metered,
-        window: Window::default(),
-        bucket: Bucket::new(bucket_cap(cache_limit), REFILL_BYTES, REFILL_PERIOD, now),
-        failed: HashMap::new(),
-        files: HashMap::new(),
-        current_file: None,
-        has_current: false,
+        bucket,
+        core: Core::new(now),
         inflight: None,
-        hold_until: now,
     };
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -277,167 +603,146 @@ pub async fn run(
     }
 }
 
-fn is_track(uri: &str) -> bool {
-    uri.starts_with("spotify:track:")
+/// The player event as the decision logic sees it, `None` if it is irrelevant.
+fn convert(event: PlayerEvent, bitrate: Bitrate) -> Option<Ev> {
+    Some(match event {
+        PlayerEvent::SetQueue {
+            current_track,
+            next_tracks,
+            ..
+        } => Ev::Queue {
+            current: current_track.map(|t| t.uri),
+            upcoming: next_tracks.into_iter().map(|t| t.uri).collect(),
+        },
+        PlayerEvent::Stopped { .. } => Ev::Stopped,
+        PlayerEvent::EndOfTrack { track_id, .. } => Ev::End(track_id.to_uri()),
+        PlayerEvent::Preloading { track_id } => Ev::Preloading(track_id.to_uri()),
+        PlayerEvent::Loading {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::PositionChanged {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::Seeked {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::Paused {
+            track_id,
+            position_ms,
+            ..
+        }
+        | PlayerEvent::Playing {
+            track_id,
+            position_ms,
+            ..
+        } => Ev::Playback {
+            uri: track_id.to_uri(),
+            ms: u64::from(position_ms),
+        },
+        PlayerEvent::TrackChanged { audio_item } => Ev::Track {
+            file: select_file(&audio_item.files, bitrate).map(|(_, id)| id),
+            len_ms: u64::from(audio_item.duration_ms),
+            uri: audio_item.uri,
+        },
+        _ => return None,
+    })
+}
+
+fn cache_path(session: &Session, file: FileId) -> Option<PathBuf> {
+    session.cache()?.file_path(file)
+}
+
+fn file_cached(session: &Session, file: FileId) -> bool {
+    cache_path(session, file).is_some_and(|p| p.exists())
 }
 
 impl Prefetcher {
     fn on_event(&mut self, event: PlayerEvent) {
-        match event {
-            PlayerEvent::SetQueue {
-                current_track,
-                next_tracks,
-                ..
-            } => {
-                let Some(current) = current_track else {
-                    self.has_current = false;
-                    self.drop_inflight("cancel", "no current track");
-                    return;
-                };
-                let before = self.window.size;
-                let upcoming: Vec<String> = next_tracks.into_iter().map(|t| t.uri).collect();
-                self.window.update(&current.uri, &upcoming);
-                self.has_current = true;
-                self.hold_until = Instant::now() + SETTLE;
-                if self.window.size != before {
-                    log::debug!("prefetch: window {before} -> {}", self.window.size);
-                }
-            }
-            PlayerEvent::Stopped { .. } => self.has_current = false,
-            PlayerEvent::PositionChanged {
-                track_id,
-                position_ms,
-                ..
-            }
-            | PlayerEvent::Seeked {
-                track_id,
-                position_ms,
-                ..
-            }
-            | PlayerEvent::Paused {
-                track_id,
-                position_ms,
-                ..
-            }
-            | PlayerEvent::Playing {
-                track_id,
-                position_ms,
-                ..
-            } => {
-                let uri = track_id.to_uri();
-                if self.window.current() == Some(uri.as_str()) {
-                    self.has_current = true;
-                }
-                self.window.played(&uri, u64::from(position_ms));
-            }
-            PlayerEvent::TrackChanged { audio_item } => {
-                self.window
-                    .duration(&audio_item.uri, u64::from(audio_item.duration_ms));
-                let file = select_file(&audio_item.files, self.bitrate).map(|(_, id)| id);
-                if let Some(id) = file {
-                    self.files.insert(audio_item.uri.clone(), id);
-                }
-                self.current_file = Some((audio_item.uri, file));
-            }
-            _ => return,
-        }
-        // A prefetch for the track that just became current, or that left the
-        // window, is pointless.
-        let stale = self.inflight.as_ref().is_some_and(|f| {
-            self.window.current() == Some(f.uri.as_str()) || !self.window.in_window(&f.uri)
-        });
-        if stale {
-            self.drop_inflight("cancel", "track is current or left the window");
+        let Some(ev) = convert(event, self.bitrate) else {
+            return;
+        };
+        self.core.on_event(ev, Instant::now());
+        if self.core.cancel_stale() {
+            self.drop_inflight("track is current, left the window or is preloading");
         }
     }
 
-    fn drop_inflight(&mut self, what: &str, why: &str) {
+    fn drop_inflight(&mut self, why: &str) {
         if let Some(f) = self.inflight.take() {
-            log::debug!("prefetch: {what} {} ({why})", f.uri);
+            log::debug!("prefetch: cancel {} ({why})", f.uri);
         }
-    }
-
-    fn fail(&mut self, uri: &str, why: &str) {
-        log::debug!("prefetch: failed {uri} ({why})");
-        self.failed.insert(uri.to_owned(), Instant::now());
-        // The map only ever needs the last minute.
-        self.failed.retain(|_, at| at.elapsed() < FAILED_TTL);
     }
 
     fn cache_path(&self, file: FileId) -> Option<PathBuf> {
-        self.session.cache()?.file_path(file)
+        cache_path(&self.session, file)
     }
 
     fn cached(&self, file: FileId) -> bool {
-        self.cache_path(file).is_some_and(|p| p.exists())
-    }
-
-    /// The audio cache is on (a path exists for any file id).
-    fn cache_on(&self) -> bool {
-        self.cache_path(FileId::from_raw(&[0; 20])).is_some()
+        file_cached(&self.session, file)
     }
 
     async fn step(&mut self) {
-        if !self.cache_on() || self.metered.load(Ordering::Relaxed) || !self.has_current {
-            self.drop_inflight("cancel", "off, metered or nothing playing");
-            return;
-        }
-        if let Some(f) = &self.inflight {
-            if f.path.exists() {
-                let (uri, id, file_id) = (f.uri.clone(), f.id, f.file_id);
-                let secs = f.started.elapsed().as_secs_f32();
-                self.inflight = None;
-                log::debug!("prefetch: done {uri} in {secs:.1}s");
-                // Warm the audio key so the track starts without a round trip.
-                let session = self.session.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = session.audio_key().request(id, file_id).await {
-                        log::debug!("prefetch: key for {uri} failed: {e}");
-                    }
-                });
-            } else if f.started.elapsed() >= INFLIGHT_TIMEOUT {
-                let uri = f.uri.clone();
-                self.inflight = None;
-                self.fail(&uri, "timeout");
-            }
-            return;
-        }
-        if Instant::now() < self.hold_until || !self.current_cached() {
-            return;
-        }
         // One resolve per window slot per step; failed and cached tracks are
-        // skipped by `next`.
+        // skipped by the core.
         for _ in 0..=MAX {
             let now = Instant::now();
-            let cached = |uri: &str| self.files.get(uri).is_some_and(|id| self.cached(*id));
-            let Some((_, uri)) = self.window.next(cached, &self.failed, now) else {
-                return;
+            let (flight_done, flight_bytes) = self.inflight.as_ref().map_or((false, 0), |f| {
+                (f.path.exists(), f.ctl.downloaded_len() as u64)
+            });
+            let action = {
+                let session = &self.session;
+                let cached = |id: FileId| file_cached(session, id);
+                let env = Env {
+                    cache_on: cache_path(session, FileId::from_raw(&[0; 20])).is_some(),
+                    metered: self.metered.load(Ordering::Relaxed),
+                    cached: &cached,
+                    flight_done,
+                    flight_bytes,
+                };
+                self.core.tick(&env, now)
             };
-            if !self.start(&uri, now).await {
-                return;
+            match action {
+                Action::Wait => return,
+                Action::Drop => return self.drop_inflight("off, metered, stalled or stale"),
+                Action::Done => {
+                    let Some(f) = self.inflight.take() else {
+                        return;
+                    };
+                    log::debug!("prefetch: done {}", f.uri);
+                    // Warm the audio key so the track starts without a round trip.
+                    let session = self.session.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = session.audio_key().request(f.id, f.file_id).await {
+                            log::debug!("prefetch: key for {} failed: {e}", f.uri);
+                        }
+                    });
+                    return;
+                }
+                Action::Start(uri) => {
+                    if !self.start(&uri, now).await {
+                        return;
+                    }
+                }
             }
         }
     }
 
-    /// Priority gate: the current track's file must be in the cache first.
-    fn current_cached(&self) -> bool {
-        let Some(current) = self.window.current() else {
-            return false;
-        };
-        if !is_track(current) {
-            return true;
-        }
-        match &self.current_file {
-            Some((uri, file)) if uri == current => file.is_none_or(|id| self.cached(id)),
-            _ => false, // its TrackChanged has not arrived yet
-        }
+    fn fail(&mut self, uri: &str, why: &str, permanent: bool, now: Instant) {
+        log::debug!("prefetch: failed {uri} ({why})");
+        self.core.failed(uri, permanent, now);
     }
 
     /// Resolves and starts downloading `uri`. Returns whether to try the next
     /// candidate now (`false`: started, or blocked until later).
     async fn start(&mut self, uri: &str, now: Instant) -> bool {
         let Ok(SpotifyUri::Track { id }) = SpotifyUri::from_uri(uri) else {
-            self.fail(uri, "not a track");
+            self.fail(uri, "not a track", true, now);
             return true;
         };
         let spotify_uri = SpotifyUri::Track { id };
@@ -449,50 +754,60 @@ impl Prefetcher {
         {
             Ok(Ok(item)) => item,
             Ok(Err(e)) => {
-                self.fail(uri, &format!("metadata: {e}"));
+                self.fail(uri, &format!("metadata: {e}"), false, now);
                 return true;
             }
             Err(_) => {
-                self.fail(uri, "metadata timeout");
+                self.fail(uri, "metadata timeout", false, now);
                 return true;
             }
         };
         if let Err(reason) = &item.availability {
-            self.fail(uri, &format!("unavailable: {reason:?}"));
+            self.fail(uri, &format!("unavailable: {reason:?}"), true, now);
             return true;
         }
         if u64::from(item.duration_ms) > MAX_TRACK_S * 1000 {
-            self.fail(uri, "longer than 420 s");
+            self.fail(uri, "longer than 420 s", true, now);
             return true;
         }
         let Some((format, file_id)) = select_file(&item.files, self.bitrate) else {
-            self.fail(uri, "no playable file");
+            self.fail(uri, "no playable file", true, now);
             return true;
         };
-        self.files.insert(uri.to_owned(), file_id);
+        self.core.resolved(uri, file_id);
         if self.cached(file_id) {
-            return true; // `next` skips it now
+            return true; // the core skips it now
         }
         let rate = stream_data_rate(format).unwrap_or(40 * 1024);
         let need = u64::from(item.duration_ms) * rate as u64 / 1000;
-        if !self.bucket.fits(need) {
-            self.fail(uri, "larger than the budget");
-            return true;
-        }
-        if !self.bucket.take(need, now) {
-            log::debug!("prefetch: budget empty, retry in {RETRY:?}");
-            self.hold_until = now + RETRY;
-            return false;
+        let budget = {
+            let mut guard = self.bucket.lock().unwrap_or_else(PoisonError::into_inner);
+            let bucket = guard.get_or_insert_with(|| {
+                Bucket::new(BUCKET_CAP_MAX, REFILL_BYTES, REFILL_PERIOD, now)
+            });
+            bucket.fits(need).then(|| bucket.take(need, now))
+        };
+        match budget {
+            None => {
+                self.fail(uri, "larger than the budget", true, now);
+                return true;
+            }
+            Some(false) => {
+                log::debug!("prefetch: budget empty, retry in {RETRY:?}");
+                self.core.blocked(now);
+                return false;
+            }
+            Some(true) => {}
         }
         let opened = timeout(OPEN_TIMEOUT, AudioFile::open(&self.session, file_id, rate)).await;
         let file = match opened {
             Ok(Ok(file)) => file,
             Ok(Err(e)) => {
-                self.fail(uri, &format!("open: {e}"));
+                self.fail(uri, &format!("open: {e}"), false, now);
                 return true;
             }
             Err(_) => {
-                self.fail(uri, "open timeout");
+                self.fail(uri, "open timeout", false, now);
                 return true;
             }
         };
@@ -500,20 +815,20 @@ impl Prefetcher {
             self.cache_path(file_id),
             file.get_stream_loader_controller(),
         ) else {
-            self.fail(uri, "no cache path or controller");
+            self.fail(uri, "no cache path or controller", false, now);
             return true;
         };
         // Without this only the first 64 KiB is fetched.
         ctl.set_stream_mode();
         log::debug!("prefetch: start {uri} ({need} bytes)");
+        self.core.started(uri, now);
         self.inflight = Some(InFlight {
-            uri: uri.to_owned(),
             id,
+            uri: uri.to_owned(),
             file_id,
             path,
-            started: now,
             _file: file,
-            _ctl: ctl,
+            ctl,
         });
         false
     }
@@ -756,5 +1071,401 @@ mod tests {
         assert_eq!(bucket_cap(40 * 1024 * 1024), 10 * 1024 * 1024);
         assert_eq!(bucket_cap(10 * 1024 * 1024 * 1024), BUCKET_CAP_MAX);
         assert_eq!(bucket_cap(0), 0);
+    }
+
+    // ---- Core: the decision state machine, driven by fake events and Instants.
+
+    fn fid(n: u8) -> FileId {
+        FileId::from_raw(&[n; 20])
+    }
+
+    fn secs(s: u64) -> Duration {
+        Duration::from_secs(s)
+    }
+
+    /// File ids in `done` are complete in the cache.
+    fn env<'a>(done: &'a dyn Fn(FileId) -> bool, flight_done: bool, flight_bytes: u64) -> Env<'a> {
+        Env {
+            cache_on: true,
+            metered: false,
+            cached: done,
+            flight_done,
+            flight_bytes,
+        }
+    }
+
+    fn queue(core: &mut Core, cur: &str, upcoming: &[&str], now: Instant) {
+        core.on_event(
+            Ev::Queue {
+                current: Some(uri(cur)),
+                upcoming: uris(upcoming),
+            },
+            now,
+        );
+    }
+
+    fn track(core: &mut Core, played: &str, orig: &str, file: u8, now: Instant) {
+        core.on_event(
+            Ev::Track {
+                uri: uri(played),
+                len_ms: 200_000,
+                file: Some(fid(file)),
+            },
+            now,
+        );
+        playback(core, orig, now);
+    }
+
+    fn playback(core: &mut Core, name: &str, now: Instant) {
+        core.on_event(
+            Ev::Playback {
+                uri: uri(name),
+                ms: 1_000,
+            },
+            now,
+        );
+    }
+
+    /// Playing "a" (file 1, fully cached) with b, c, d queued and a window of 3,
+    /// at the moment the settle delay has passed. Returns the core and that time.
+    fn playing() -> (Core, Instant) {
+        let t0 = Instant::now();
+        let mut core = Core::new(t0);
+        queue(&mut core, "a", &["b", "c", "d"], t0);
+        core.window.size = 3;
+        track(&mut core, "a", "a", 1, t0);
+        (core, t0 + SETTLE)
+    }
+
+    const A_CACHED: &dyn Fn(FileId) -> bool = &|id| id == FileId::from_raw(&[1; 20]);
+
+    #[test]
+    fn gate_opens_once_the_current_track_is_cached() {
+        let (mut core, t) = playing();
+        assert_eq!(core.tick(&env(&|_| false, false, 0), t), Action::Wait);
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t),
+            Action::Start(uri("b"))
+        );
+    }
+
+    #[test]
+    fn settles_after_a_queue_change() {
+        let (mut core, t) = playing();
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t - Duration::from_millis(1)),
+            Action::Wait
+        );
+    }
+
+    #[test]
+    fn cancels_when_the_track_becomes_current_or_leaves_the_window() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        assert!(!core.cancel_stale());
+        // The queue moves on: b is now playing.
+        queue(&mut core, "b", &["c", "d", "e"], t);
+        assert!(core.cancel_stale());
+        assert!(!core.cancel_stale()); // already cleared
+
+        // Window shrinks below the download's slot.
+        let (mut core, t) = playing();
+        core.started(&uri("d"), t);
+        core.window.size = 1;
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Drop);
+    }
+
+    #[test]
+    fn metered_or_cache_off_drops_the_download() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        let mut e = env(A_CACHED, false, 0);
+        e.metered = true;
+        assert_eq!(core.tick(&e, t), Action::Drop);
+        assert_eq!(core.tick(&e, t), Action::Wait);
+        core.started(&uri("b"), t);
+        let mut e = env(A_CACHED, false, 0);
+        e.cache_on = false;
+        assert_eq!(core.tick(&e, t), Action::Drop);
+    }
+
+    #[test]
+    fn slow_but_moving_download_is_never_dropped() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        // 10 minutes at 80 KB/s: far past the old fixed 120 s limit.
+        for s in (1..600).step_by(5) {
+            let bytes = s * 80_000;
+            assert_eq!(
+                core.tick(&env(A_CACHED, false, bytes), t + secs(s)),
+                Action::Wait,
+                "second {s}"
+            );
+        }
+        assert_eq!(
+            core.tick(&env(A_CACHED, true, 1), t + secs(600)),
+            Action::Done
+        );
+    }
+
+    #[test]
+    fn stalled_download_is_dropped_after_30s_without_bytes() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 500), t + secs(10)),
+            Action::Wait
+        );
+        // Last bytes arrived at +10 s.
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 500), t + secs(39)),
+            Action::Wait
+        );
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 500), t + secs(40)),
+            Action::Drop
+        );
+    }
+
+    #[test]
+    fn stall_suspends_prefetching_until_track_changes_and_10_minutes() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        let stalled = t + STALL_TIMEOUT;
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), stalled), Action::Drop);
+
+        // Same track, even after the 60 s failure expiry and past 10 minutes:
+        // still suspended.
+        for s in [1, 61, 700, 5000] {
+            assert_eq!(
+                core.tick(&env(A_CACHED, false, 0), stalled + secs(s)),
+                Action::Wait,
+                "+{s}s"
+            );
+        }
+
+        // A new track within the 10 minutes: still suspended.
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        let stalled = t + STALL_TIMEOUT;
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), stalled), Action::Drop);
+        let t2 = stalled + secs(60);
+        queue(&mut core, "b", &["c", "d", "e"], t2);
+        track(&mut core, "b", "b", 2, t2);
+        let all = |_: FileId| true;
+        assert_eq!(core.tick(&env(&all, false, 0), t2 + SETTLE), Action::Wait);
+
+        // Track changed and 10 minutes passed: prefetching resumes.
+        let t3 = stalled + SUSPEND;
+        let b_cached = |id: FileId| id == fid(2);
+        assert_eq!(
+            core.tick(&env(&b_cached, false, 0), t3),
+            Action::Start(uri("c"))
+        );
+    }
+
+    #[test]
+    fn ten_minutes_alone_do_not_lift_the_suspension() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        let stalled = t + STALL_TIMEOUT;
+        core.tick(&env(A_CACHED, false, 0), stalled);
+        // Track changes right away, but before the 10 minutes are over.
+        queue(&mut core, "b", &["c", "d", "e"], stalled);
+        track(&mut core, "b", "b", 2, stalled);
+        let b_cached = |id: FileId| id == fid(2);
+        assert_eq!(
+            core.tick(&env(&b_cached, false, 0), stalled + SUSPEND - secs(1)),
+            Action::Wait
+        );
+        assert_eq!(
+            core.tick(&env(&b_cached, false, 0), stalled + SUSPEND),
+            Action::Start(uri("c"))
+        );
+    }
+
+    #[test]
+    fn preloading_drops_the_download_and_counts_as_cached() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        core.on_event(Ev::Preloading(uri("b")), t);
+        assert!(core.cancel_stale());
+        // b is skipped for the next candidate: c.
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t),
+            Action::Start(uri("c"))
+        );
+
+        // Another uri's preload does not touch a download of b.
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        core.on_event(Ev::Preloading(uri("c")), t);
+        assert!(!core.cancel_stale());
+    }
+
+    #[test]
+    fn preloaded_marker_ends_when_the_current_track_changes() {
+        let (mut core, t) = playing();
+        core.window.size = 1;
+        core.on_event(Ev::Preloading(uri("b")), t);
+        // b counts as cached, and the window of 1 has no other slot.
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Wait);
+        // b becomes current, then a new upcoming list: preload marker is gone,
+        // so a later b would be fetched again.
+        queue(&mut core, "b", &["c", "d", "e"], t);
+        track(&mut core, "b", "b", 2, t);
+        queue(&mut core, "x", &["b", "c", "d"], t);
+        track(&mut core, "x", "x", 3, t);
+        let x_cached = |id: FileId| id == fid(3);
+        assert_eq!(
+            core.tick(&env(&x_cached, false, 0), t + SETTLE),
+            Action::Start(uri("b"))
+        );
+    }
+
+    #[test]
+    fn bucket_survives_a_restart() {
+        let t0 = Instant::now();
+        let shared = SharedBucket::default();
+        init_bucket(&shared, 100, t0);
+        assert!(shared.lock().unwrap().as_mut().unwrap().take(100, t0));
+        // The engine restarts: a new prefetcher initialises the same bucket.
+        init_bucket(&shared, 100, t0);
+        assert!(!shared.lock().unwrap().as_mut().unwrap().take(50, t0));
+        // A smaller cache limit shrinks it without refilling.
+        init_bucket(&shared, 10, t0);
+        assert!(!shared.lock().unwrap().as_mut().unwrap().take(50, t0));
+    }
+
+    #[test]
+    fn relinked_track_opens_the_gate() {
+        let t0 = Instant::now();
+        let t = t0 + SETTLE;
+        // Not bound yet: no playback event named the queued uri.
+        let mut unbound = Core::new(t0);
+        queue(&mut unbound, "orig", &["b", "c", "d"], t0);
+        unbound.on_event(
+            Ev::Track {
+                uri: uri("alt"),
+                len_ms: 200_000,
+                file: Some(fid(1)),
+            },
+            t0,
+        );
+        assert_eq!(unbound.tick(&env(A_CACHED, false, 0), t), Action::Wait);
+
+        let mut core = Core::new(t0);
+        queue(&mut core, "orig", &["b", "c", "d"], t0);
+        track(&mut core, "alt", "orig", 1, t0);
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t),
+            Action::Start(uri("b"))
+        );
+        // Still waits for the file of the relinked track.
+        assert_eq!(core.tick(&env(&|_| false, false, 0), t), Action::Wait);
+        // Its duration reached the queued uri, so the window grows on a full play.
+        core.on_event(
+            Ev::Playback {
+                uri: uri("orig"),
+                ms: 190_000,
+            },
+            t,
+        );
+        queue(&mut core, "b", &["c", "d", "e"], t);
+        assert_eq!(core.window.size, 2);
+    }
+
+    #[test]
+    fn permanent_failures_are_not_retried_but_transient_ones_are() {
+        let (mut core, t) = playing();
+        core.failed(&uri("b"), true, t);
+        core.failed(&uri("c"), false, t);
+        let e = env(A_CACHED, false, 0);
+        // c is blocked for 60 s, b for the whole session.
+        assert_eq!(core.tick(&e, t), Action::Start(uri("d")));
+        core.failed(&uri("d"), true, t);
+        assert_eq!(core.tick(&e, t + FAILED_TTL - secs(1)), Action::Wait);
+        assert_eq!(core.tick(&e, t + FAILED_TTL), Action::Start(uri("c")));
+        assert_eq!(core.tick(&e, t + secs(24 * 3600)), Action::Start(uri("c")));
+        core.failed(&uri("c"), true, t + secs(24 * 3600));
+        assert_eq!(core.tick(&e, t + secs(24 * 3600)), Action::Wait);
+    }
+
+    #[test]
+    fn queue_while_stopped_prefetches_nothing() {
+        let t0 = Instant::now();
+        let mut core = Core::new(t0);
+        queue(&mut core, "a", &["b", "c", "d"], t0);
+        core.on_event(
+            Ev::Track {
+                uri: uri("a"),
+                len_ms: 1,
+                file: None,
+            },
+            t0,
+        );
+        // Nothing is playing: not even a track with no file to wait for starts.
+        assert_eq!(
+            core.tick(&env(&|_| false, false, 0), t0 + SETTLE),
+            Action::Wait
+        );
+        // Playback begins.
+        playback(&mut core, "a", t0);
+        assert_eq!(
+            core.tick(&env(&|_| false, false, 0), t0 + SETTLE),
+            Action::Start(uri("b"))
+        );
+    }
+
+    #[test]
+    fn stop_drops_the_download_and_goes_idle() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        core.on_event(Ev::Stopped, t);
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Drop);
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Wait);
+        // Playing again resumes.
+        playback(&mut core, "a", t);
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t),
+            Action::Start(uri("b"))
+        );
+    }
+
+    #[test]
+    fn paused_with_a_loaded_track_still_prefetches() {
+        let (mut core, t) = playing();
+        playback(&mut core, "a", t); // what Paused reports
+        assert_eq!(
+            core.tick(&env(A_CACHED, false, 0), t),
+            Action::Start(uri("b"))
+        );
+    }
+
+    #[test]
+    fn end_of_track_with_no_next_goes_idle() {
+        let (mut core, t) = playing();
+        core.started(&uri("b"), t);
+        core.on_event(Ev::End(uri("a")), t);
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Drop);
+
+        // A gapless successor that already plays is not stopped by the old end event.
+        let (mut core, t) = playing();
+        playback(&mut core, "b", t);
+        core.on_event(Ev::End(uri("a")), t);
+        assert!(core.active);
+    }
+
+    #[test]
+    fn no_current_track_goes_idle() {
+        let (mut core, t) = playing();
+        core.on_event(
+            Ev::Queue {
+                current: None,
+                upcoming: vec![],
+            },
+            t,
+        );
+        assert_eq!(core.tick(&env(A_CACHED, false, 0), t), Action::Wait);
     }
 }

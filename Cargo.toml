@@ -306,15 +306,16 @@ hyper-proxy2 = { git = "https://github.com/crmne/hyper-proxy2", rev = "efca48113
 # disconnect (#1765), and a volume set while the device is inactive (#1770).
 # Berkay2002/librespot spotifast-prefetch sits on top of that branch and adds
 # what src/prefetch.rs needs: a memory cache of audio keys, a set queue event
-# after load_track and shuffle (so the prefetcher sees every queue change), and
+# after load_track and shuffle (so the prefetcher sees every queue change),
 # public select_file and stream_data_rate (which file a track would play, and
-# its byte rate).
+# its byte rate), and StreamLoaderController::downloaded_len (download progress,
+# to tell a slow link from a stalled one).
 # Every librespot crate comes from the fork so one copy exists. Drop each
 # patch once upstream merges it.
-librespot-audio = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-connect = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-core = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-metadata = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-oauth = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-playback = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
-librespot-protocol = { git = "https://github.com/Berkay2002/librespot", rev = "bc712cbb0749677ab19e9dc7430f85d417a7eca5" }
+librespot-audio = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-connect = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-core = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-metadata = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-oauth = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-playback = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-protocol = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
