@@ -1,5 +1,5 @@
 //! The queue as a crate of records at the top of the DJ page: the playing sleeve with its vinyl
-//! half out, the next sleeves fanned behind it in perspective.
+//! half out, the next sleeves fanned one over the other, each a little smaller.
 //!
 //! It only draws. The motion is its own: the disc slides out when a song starts, slides back and
 //! the crate shifts one sleeve when the song changes, new sleeves are dealt in with a green dot,
@@ -25,14 +25,14 @@ const MAX_NEXT: usize = 12;
 /// How much of an up-next sleeve shows before the next one lies over it.
 const VISIBLE: f32 = 0.72;
 
-/// An up-next sleeve's full width and left-edge height (the right edge is a little taller).
+/// An up-next sleeve is a plain rectangle: each is a little narrower than the one before, all the
+/// same height with their bottoms level, so the one lying over another covers its hidden part.
 fn wide(k: usize) -> f32 {
     (120.0 - 2.5 * k as f32).max(96.0)
 }
 
-fn high(k: usize) -> f32 {
-    (104.0 - 2.2 * k as f32).max(84.0)
-}
+const HIGH: f32 = 104.0;
+
 /// Seconds: the disc sliding out, the crate shifting, a sleeve being dealt in.
 const SLIDE: f32 = 0.4;
 const SHIFT: f32 = 0.35;
@@ -104,7 +104,7 @@ fn disc_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     Some(texture)
 }
 
-/// A sleeve in slight perspective: the right edge is taller than the left, the bottoms level. Cut
+/// A sleeve whose right edge may differ in height from its left, the bottoms level. Cut
 /// into strips so the picture does not kink along a diagonal.
 #[allow(clippy::too_many_arguments)]
 fn paint_sleeve(
@@ -344,7 +344,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             continue;
         }
         let width = wide(k);
-        let height = high(k);
+        let height = HIGH;
         let shade = 255 - (k * 8).min(80) as u8;
         // the edge of this sleeve casts a little shadow on the one it lies over
         if k > 0 {
@@ -375,7 +375,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             width,
             base,
             height,
-            height * 1.06,
+            height,
             tint,
         );
         if born.is_some() {
@@ -429,7 +429,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if let Some(sleeve) = &playing {
         // from where the next sleeve was to the top of the crate
-        let from = Rect::from_min_max(pos2(first, base - high(0)), pos2(first + wide(0), base));
+        let from = Rect::from_min_max(pos2(first, base - HIGH), pos2(first + wide(0), base));
         let at = if memo.gone.is_some() {
             Rect::from_min_max(
                 from.min + (top.min - from.min) * shift,
