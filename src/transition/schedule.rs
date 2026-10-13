@@ -18,6 +18,10 @@ const AUTOMIX_FALLBACK_MS: u32 = 6_000;
 /// Downbeats this close to the end are part of the fade-out, not music to
 /// mix on.
 const END_MARGIN_MS: f32 = 250.0;
+/// The earliest an overlap may start, before the end of the outgoing track.
+/// The next track is preloaded a little before this, so an overlap starting
+/// earlier would find nothing to mix.
+pub const LATEST_START_BEFORE_END_MS: u32 = 45_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -78,9 +82,18 @@ fn from_recipe(config: Config, a: &Track, b: &Track, recipe: &Recipe) -> Option<
             let start_a = u32::try_from(overlap.start_a_ms).ok()?;
             // Spotify lets B start before its own beginning; it cannot here.
             let start_b = u32::try_from(overlap.start_b_ms).unwrap_or(0);
+            let limit = (f64::from(a.duration_ms.min(b.duration_ms)) * MAX_SHARE) as u32;
+            let duration = duration.min(limit).min(MAX_OVERLAP_MS);
             let fits = start_a.checked_add(duration)? <= a.duration_ms
                 && start_b.checked_add(duration)? <= b.duration_ms;
-            fits.then_some(TransitionPlan {
+            let in_time = a.duration_ms - start_a.min(a.duration_ms) <= LATEST_START_BEFORE_END_MS;
+            if !fits || !in_time {
+                log::info!(
+                    "Mix transition at {start_a} ms does not fit this {} ms track; mixing automatically",
+                    a.duration_ms
+                );
+            }
+            (fits && in_time).then_some(TransitionPlan {
                 start_a_ms: start_a,
                 start_b_ms: start_b,
                 duration_ms: duration,
@@ -336,6 +349,25 @@ mod tests {
                 .plan
                 .start_a_ms,
             194_000
+        );
+        // One starting before the next track is preloaded is too.
+        recipe.overlap.as_mut().unwrap().start_a_ms = 150_000;
+        assert_eq!(
+            choose(config, &a, &b, Some(&recipe))
+                .unwrap()
+                .plan
+                .start_a_ms,
+            194_000
+        );
+        // A long one is shortened to the share of either track it may take.
+        recipe.overlap.as_mut().unwrap().start_a_ms = 160_000;
+        recipe.overlap.as_mut().unwrap().duration_ms = 60_000;
+        assert_eq!(
+            choose(config, &a, &b, Some(&recipe))
+                .unwrap()
+                .plan
+                .duration_ms,
+            35_000
         );
         recipe.preset_id = 0;
         assert!(choose(config, &a, &b, Some(&recipe)).is_none());

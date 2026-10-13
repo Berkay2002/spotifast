@@ -42,14 +42,21 @@ const KINDS: [i32; 4] = [
 const KEPT_TRACKS: usize = 32;
 /// The next track is preloaded this long before the end when transitions
 /// are on, so the longest overlap can start on time.
-const TRANSITION_PRELOAD_MS: u32 = 50_000;
+const TRANSITION_PRELOAD_MS: u32 = schedule::LATEST_START_BEFORE_END_MS + 5_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub mode: Mode,
     pub crossfade_secs: u32,
-    /// Play a Mix playlist's stored transitions, in playlist order.
+    /// Play a Mix playlist's stored transitions, in playlist order, in
+    /// place of the mode's own. Off stays off.
     pub mix_recipes: bool,
+}
+
+impl Settings {
+    fn recipes(&self) -> bool {
+        self.mix_recipes && self.mode != Mode::Off
+    }
 }
 
 impl Default for Settings {
@@ -249,7 +256,7 @@ impl Planner {
         state.context = context.to_string();
         state.recipes.clear();
         state.generation += 1;
-        self.settings().mix_recipes && context.starts_with("spotify:playlist:")
+        self.settings().recipes() && context.starts_with("spotify:playlist:")
     }
 
     fn found_recipes(&self, context: &str, recipes: Vec<Recipe>) {
@@ -286,12 +293,12 @@ impl Planner {
         };
         let (a_mix, b_mix) = (mix(&a_uri), mix(&b_uri));
         let recipe = settings
-            .mix_recipes
+            .recipes()
             .then(|| state.recipes.get(&(a_uri.clone(), b_uri.clone())))
             .flatten()
             .filter(|recipe| recipe.matches(&a_uri, &b_uri, beat_hash(a_mix), beat_hash(b_mix)));
         if recipe.is_none()
-            && settings.mix_recipes
+            && settings.recipes()
             && state.recipes.contains_key(&(a_uri.clone(), b_uri.clone()))
         {
             log::info!("Mix transition recipe mismatch for this pair; falling back to the setting");
@@ -323,9 +330,7 @@ impl Planner {
 
 impl Transitions for Planner {
     fn preload_before_end_ms(&self) -> u32 {
-        let settings = self.settings();
-        let recipes = settings.mix_recipes && !self.state().recipes.is_empty();
-        if settings.mode == Mode::Off && !recipes {
+        if self.settings().mode == Mode::Off {
             0
         } else {
             TRANSITION_PRELOAD_MS
@@ -386,8 +391,8 @@ pub async fn run(
     planner: Arc<Planner>,
 ) {
     while let Some(event) = events.recv().await {
-        let settings = planner.settings();
-        if settings.mode == Mode::Off && !settings.mix_recipes {
+        // Off asks Spotify for nothing.
+        if planner.settings().mode == Mode::Off {
             continue;
         }
         let mut wanted = Vec::new();
@@ -413,12 +418,6 @@ pub async fn run(
             PlayerEvent::Preloading { track_id } => wanted.push(track_id.to_uri()),
             PlayerEvent::TrackChanged { audio_item } => wanted.push(audio_item.track_id.to_uri()),
             _ => continue,
-        }
-        // With transitions off, a Mix playlist's recipes still play; their
-        // beat hashes go unchecked rather than fetching analysis for every
-        // track.
-        if settings.mode == Mode::Off {
-            continue;
         }
         let claimed = planner.claim(&wanted);
         if claimed.is_empty() {
@@ -473,24 +472,37 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_recipe_wins_in_playlist_order_even_when_off() {
+    fn a_stored_recipe_wins_in_playlist_order_but_off_stays_off() {
         let (a, b) = (uri(A), uri(B));
-        let planner = planner(Mode::Off, true);
+        let off = planner(Mode::Off, true);
+        assert!(!off.enter_context("spotify:playlist:2222222222222222222222"));
+        off.found_recipes(
+            "spotify:playlist:2222222222222222222222",
+            vec![Recipe::from_attribute(&fixture()).unwrap()],
+        );
+        assert_eq!(off.preload_before_end_ms(), 0);
+        assert_eq!(off.plan(&a, 220_000, &b, 240_000), None);
+        let planner = planner(Mode::Crossfade, true);
         with_recipe(&planner);
-        assert_eq!(planner.preload_before_end_ms(), TRANSITION_PRELOAD_MS);
-        let plan = planner.plan(&a, 240_000, &b, 240_000).unwrap();
+        let plan = planner.plan(&a, 220_000, &b, 240_000).unwrap();
         assert_eq!(
             (plan.start_a_ms, plan.start_b_ms, plan.duration_ms),
             (180_000, 20_000, 16_000)
         );
         // Played the other way round, the recipe does not apply.
-        assert_eq!(planner.plan(&b, 240_000, &a, 240_000), None);
+        assert_eq!(
+            planner.plan(&b, 220_000, &a, 240_000).unwrap().duration_ms,
+            6_000
+        );
         // Turning recipes off falls back to the mode.
         planner.set_settings(Settings {
             mix_recipes: false,
             ..planner.settings()
         });
-        assert_eq!(planner.plan(&a, 240_000, &b, 240_000), None);
+        assert_eq!(
+            planner.plan(&a, 220_000, &b, 240_000).unwrap().duration_ms,
+            6_000
+        );
     }
 
     #[test]
@@ -510,7 +522,7 @@ mod tests {
             &[A.to_string()],
             Ok(HashMap::from([(A.to_string(), changed)])),
         );
-        let plan = planner.plan(&a, 240_000, &b, 240_000).unwrap();
+        let plan = planner.plan(&a, 220_000, &b, 240_000).unwrap();
         assert_eq!(plan.duration_ms, 6_000, "falls back to the crossfade");
     }
 

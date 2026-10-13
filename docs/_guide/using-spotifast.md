@@ -223,8 +223,9 @@ choose. **Automix** lines up the downbeats and swaps the bass over eight bars
 when Spotify's analysis says both songs can be mixed and their tempos are
 within 3 percent, and crossfades otherwise. **Use Mix transitions from
 playlists** plays the transitions saved in a Mix playlist when its songs play
-in playlist order. Skipping during a transition goes straight to the incoming
-song; seeking cancels it.
+in playlist order, in place of Crossfade or Automix; with Transitions off,
+songs still play gaplessly. Skipping during a transition goes straight to
+the incoming song; seeking cancels it.
 
 Left and right arrows adjust a focused volume slider by five percentage
 points, or the seek slider by one percent of the song. Screen readers can
