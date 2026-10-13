@@ -11,6 +11,11 @@ use crate::theme::{self, Icon};
 
 use super::widgets;
 
+/// Text that wraps at the page's width (`theme::text` stays on one line).
+fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: egui::Color32) {
+    ui.add(egui::Label::new(egui::RichText::new(text).font(font).color(color)).wrap());
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let palette = app.palette;
     ui.add_space(8.0);
@@ -26,9 +31,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     let blocker = app.dj.status.as_ref().and_then(crate::dj::session::blocker);
     if let Some(message) = &blocker {
-        ui.horizontal_wrapped(|ui| {
-            theme::text(ui, message.clone(), theme::regular(14.0), palette.warning);
-        });
+        wrapped(ui, &message, theme::regular(14.0), palette.warning);
         ui.add_space(8.0);
         let label = if app.dj.checking() {
             "Checking…"
@@ -76,13 +79,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         match line.kind {
             LineKind::User => {
                 ui.with_layout(Layout::top_down(Align::Max), |ui| {
-                    theme::text(ui, line.text.clone(), theme::semibold(14.5), palette.accent);
+                    wrapped(ui, &line.text, theme::semibold(14.5), palette.accent);
                 });
             }
             LineKind::Assistant => {
-                ui.horizontal_wrapped(|ui| {
-                    theme::text(ui, line.text.clone(), theme::regular(14.5), palette.text);
-                });
+                wrapped(ui, &line.text, theme::regular(14.5), palette.text);
             }
             LineKind::Tool => {
                 ui.horizontal(|ui| {
@@ -91,9 +92,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 });
             }
             LineKind::Error => {
-                ui.horizontal_wrapped(|ui| {
-                    theme::text(ui, line.text.clone(), theme::regular(14.0), palette.danger);
-                });
+                wrapped(ui, &line.text, theme::regular(14.0), palette.danger);
             }
         }
         ui.add_space(6.0);

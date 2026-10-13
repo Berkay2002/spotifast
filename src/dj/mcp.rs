@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 /// What the handler gets: tool name and arguments. Its text is what the model reads; an `Err` is
@@ -22,6 +22,8 @@ pub type Handler = Arc<dyn Fn(&str, Value) -> Result<String, String> + Send + Sy
 
 const MAX_HEADER: usize = 16 * 1024;
 const MAX_BODY: usize = 2 * 1024 * 1024;
+/// Connections served at once; the one `claude` child needs a handful.
+const MAX_CONNECTIONS: usize = 16;
 /// A request line that does not arrive in this time is dropped (a connection that never speaks).
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -40,17 +42,30 @@ impl McpServer {
         let stop = Arc::new(AtomicBool::new(false));
         let st = stop.clone();
         let tok = token.clone();
+        let active = Arc::new(AtomicUsize::new(0));
         std::thread::Builder::new()
             .name("claude-mcp".into())
             .spawn(move || {
                 while !st.load(Ordering::SeqCst) {
                     match listener.accept() {
                         Ok((conn, _)) => {
+                            // a flood of connections is dropped, not given a thread each
+                            if active.load(Ordering::SeqCst) >= MAX_CONNECTIONS {
+                                continue;
+                            }
+                            active.fetch_add(1, Ordering::SeqCst);
                             let (tools, handler, tok) =
                                 (tools.clone(), handler.clone(), tok.clone());
-                            let _ = std::thread::Builder::new()
+                            let count = active.clone();
+                            let started = std::thread::Builder::new()
                                 .name("claude-mcp-conn".into())
-                                .spawn(move || serve(conn, port, &tok, &tools, &handler));
+                                .spawn(move || {
+                                    serve(conn, port, &tok, &tools, &handler);
+                                    count.fetch_sub(1, Ordering::SeqCst);
+                                });
+                            if started.is_err() {
+                                active.fetch_sub(1, Ordering::SeqCst);
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(40))
@@ -108,7 +123,12 @@ impl Request {
 }
 
 fn read_request(conn: &TcpStream) -> Result<Request, (u16, &'static str)> {
-    let mut r = BufReader::new(conn.try_clone().map_err(|_| (500, "io"))?);
+    // the head is read through a cap, so one endless line cannot grow a buffer before it is judged
+    let mut r = BufReader::new(
+        conn.try_clone()
+            .map_err(|_| (500, "io"))?
+            .take(MAX_HEADER as u64 + 1),
+    );
     let mut line = String::new();
     r.read_line(&mut line).map_err(|_| (400, "bad request"))?;
     let mut parts = line.split_whitespace();
@@ -142,13 +162,18 @@ fn read_request(conn: &TcpStream) -> Result<Request, (u16, &'static str)> {
     if req.header("transfer-encoding").is_some() {
         return Err((411, "send a Content-Length"));
     }
+    // the body has its own, larger cap
+    r.get_mut().set_limit(MAX_BODY as u64);
     Ok(Request {
         body: read_body(&mut r, &req)?,
         ..req
     })
 }
 
-fn read_body(r: &mut BufReader<TcpStream>, req: &Request) -> Result<Vec<u8>, (u16, &'static str)> {
+fn read_body(
+    r: &mut BufReader<std::io::Take<TcpStream>>,
+    req: &Request,
+) -> Result<Vec<u8>, (u16, &'static str)> {
     let len: usize = req
         .header("content-length")
         .and_then(|v| v.parse().ok())

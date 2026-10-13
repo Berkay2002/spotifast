@@ -832,6 +832,51 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
             app.open(Page::Album(id));
         }
     }
+    // The DJ's state is set before the page opens, which would otherwise ask the real
+    // `claude` whether it is installed.
+    for surface in show.unwrap_or("").split(',').map(str::trim) {
+        use crate::dj::{Line, LineKind, Status};
+        let line = |kind, text: &str| Line {
+            kind,
+            text: text.to_string(),
+        };
+        match surface {
+            "dj-ready" | "dj-chat" => {
+                app.dj.status = Some(Status {
+                    installed: true,
+                    logged_in: true,
+                    plan: Some("max".into()),
+                    version: Some("2.1.296 (Claude Code)".into()),
+                    ..Status::default()
+                });
+                if surface == "dj-chat" {
+                    app.dj.lines = vec![
+                        line(
+                            LineKind::User,
+                            "Something mellow for a late evening, a bit of jazz and a bit of electronic",
+                        ),
+                        line(
+                            LineKind::Tool,
+                            "Searched for Bonobo, Khruangbin and Nils Frahm",
+                        ),
+                        line(LineKind::Tool, "Queued 8 songs"),
+                        line(
+                            LineKind::Assistant,
+                            "Queued eight slow songs that move from warm electronic into soft jazz,                              skipping anything you played in the last week. Say the word if you want                              it quieter or faster.",
+                        ),
+                        line(LineKind::User, "Quieter, and skip this one"),
+                        line(LineKind::Tool, "Skipped"),
+                        line(LineKind::Tool, "Queued 6 songs"),
+                    ];
+                    app.dj.busy = true;
+                    app.dj.phase = Some("thinking");
+                }
+            }
+            "dj-missing" => app.dj.status = Some(Status::default()),
+            "settings-dj" => app.demo_settings_filter = Some("dj".into()),
+            _ => {}
+        }
+    }
     if let Some(page) = page.and_then(Page::decode) {
         app.open(page);
     }

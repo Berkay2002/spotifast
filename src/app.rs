@@ -605,6 +605,8 @@ pub struct App {
     play_search_serial: u64,
     /// The AI DJ's chat and the tool calls it has sent us.
     pub dj: crate::dj::Dj,
+    /// `--demo-show settings-dj`: text for the settings search field on the next frame.
+    pub demo_settings_filter: Option<String>,
     dj_searches: HashMap<u64, dj::DjSearch>,
     dj_search_serial: u64,
     last_album_queue: Option<(String, Instant)>,
@@ -1061,6 +1063,7 @@ impl App {
             album_queue_serial: 0,
             play_search_serial: 0,
             dj: crate::dj::Dj::new(waker.clone()),
+            demo_settings_filter: None,
             dj_searches: HashMap::new(),
             dj_search_serial: 0,
             last_album_queue: None,
