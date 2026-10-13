@@ -338,6 +338,14 @@ fn chat(
         });
         ui.add_space(18.0);
     }
+    if all.is_empty() {
+        column(ui, COLUMN, |ui| {
+            for ask in asks {
+                ask_card(ui, &mut cx, ask);
+                ui.add_space(8.0);
+            }
+        });
+    }
     if let Some(hint) = &dj.hint {
         column(ui, COLUMN, |ui| {
             theme::text(ui, hint.clone(), theme::regular(12.5), palette.secondary);
@@ -1011,6 +1019,12 @@ fn ask_card(ui: &mut Ui, cx: &mut Cx, ask: &Ask) {
                     }
                 });
             });
+            // the words of the change itself, so the picture and the short lines are never all
+            // the listener has to go on
+            if !ask.full.is_empty() {
+                ui.add_space(6.0);
+                wrapped(ui, &ask.full, theme::regular(12.5), palette.secondary);
+            }
         });
     // the unanswered ones time out, so the page keeps ticking
     ui.ctx()

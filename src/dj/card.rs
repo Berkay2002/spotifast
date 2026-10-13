@@ -50,6 +50,9 @@ pub struct Ask {
     pub id: u64,
     pub title: String,
     pub detail: String,
+    /// Everything the change would do, as the listener will read it: the card's short lines
+    /// never stand in for it.
+    pub full: String,
     /// Up to four covers for the collage.
     pub covers: Vec<String>,
     /// The label of the button that allows it.
