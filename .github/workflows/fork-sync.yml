@@ -3,6 +3,11 @@ name: Fork sync
 # Berkay2002/spotifast republishes every crmne/spotifast stable release with
 # the branches in .github/fork-branches.txt merged in, signed with the fork's
 # own update key, so the installed app's built-in updater follows it.
+# The fork's version for crmne's X.Y.Z is X.Y.(Z*100+N), N the build number
+# for that tag from 0, written into Cargo.toml before the build. A build is
+# skipped only when the latest one of that tag was made of the same crmne SHA
+# and branch SHAs (the `fork-sync-inputs:` line in its release notes).
+#
 # Windows x64 only. The packaging steps are copied from release.yml's build
 # and publish jobs; keep them in step when that workflow changes.
 #
@@ -49,6 +54,9 @@ jobs:
     outputs:
       build: ${{ steps.sync.outputs.build }}
       tag: ${{ steps.sync.outputs.tag }}
+      upstream: ${{ steps.sync.outputs.upstream }}
+      build_number: ${{ steps.sync.outputs.build_number }}
+      inputs: ${{ steps.sync.outputs.inputs }}
       sha: ${{ steps.sync.outputs.sha }}
       latest: ${{ steps.sync.outputs.latest }}
     steps:
@@ -100,18 +108,29 @@ jobs:
             exit 1
           }
 
+          # The fork's version for crmne's MAJOR.MINOR.PATCH is
+          # MAJOR.MINOR.(PATCH*100+N), N the fork's build number for that
+          # tag, from 0. The updater offers any stable version above the
+          # installed one, so every rebuild is an update, and crmne's own
+          # next patch (PATCH+1, from *100) still sorts above all of them.
+          fork_version() { # upstream tag, N
+            local major minor patch
+            IFS=. read -r major minor patch <<< "${1#v}"
+            echo "$major.$minor.$((10#$patch * 100 + $2))"
+          }
+          [ "$(fork_version v0.13.0 0)" = 0.13.0 ] \
+            && [ "$(fork_version v0.13.0 1)" = 0.13.1 ] \
+            && [ "$(fork_version v0.13.1 0)" = 0.13.100 ] \
+            && [ "$(fork_version v0.13.1 7)" = 0.13.107 ] \
+            && [ "$(fork_version v0.14.0 0)" = 0.14.0 ] \
+            || { echo "::error::fork_version does not follow MAJOR.MINOR.(PATCH*100+N)"; exit 1; }
+
           tag="$INPUT_TAG"
           latest=$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)
           [ -n "$tag" ] || tag="$latest"
           [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a stable release tag: $tag"; exit 1; }
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "upstream=$tag" >> "$GITHUB_OUTPUT"
           [ "$tag" = "$latest" ] && echo "latest=true" >> "$GITHUB_OUTPUT" || echo "latest=false" >> "$GITHUB_OUTPUT"
-
-          if [ "$INPUT_FORCE" != "true" ] && gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "The fork already has a release for $tag."
-            echo "build=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
 
           # The lists, before the checkout moves off fork/update-channel.
           branches=$(tr -d '\r' < .github/fork-branches.txt | sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^$')
@@ -119,8 +138,49 @@ jobs:
 
           git config user.name "fork-sync"
           git config user.email "fork-sync@users.noreply.github.com"
-          git fetch --no-tags "https://github.com/$UPSTREAM.git" "refs/tags/$tag:refs/upstream-tags/$tag"
-          git switch --detach "refs/upstream-tags/$tag"
+          # crmne's tags never go into refs/tags, where they would clash with
+          # the fork's own (v0.13.1 is a fork build now and may be a crmne
+          # tag later): the tag is fetched to a private ref and used by SHA.
+          git fetch --no-tags "https://github.com/$UPSTREAM.git" "refs/tags/$tag:refs/upstream/tags/$tag"
+          upstream_sha=$(git rev-parse "refs/upstream/tags/$tag^{commit}")
+
+          # What this build is made of: crmne's tag and each branch, by SHA.
+          inputs="$tag@$upstream_sha"
+          for branch in $branches; do
+            git rev-parse --verify --quiet "origin/$branch" >/dev/null \
+              || fail "fork-sync: missing branch $branch" "$branch is listed in .github/fork-branches.txt but does not exist in the fork. Building $tag stopped."
+            inputs="$inputs $branch@$(git rev-parse "origin/$branch")"
+          done
+
+          # The fork's latest build of this crmne tag, and what it was made of.
+          series="${tag%.*}"
+          first=$((10#${tag##*.} * 100))
+          previous=$(gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' \
+            | awk -F. -v series="$series" -v lo="$first" -v hi="$((first + 99))" \
+                '$1 "." $2 == series && $3 ~ /^[0-9]+$/ && $3 + 0 >= lo && $3 + 0 <= hi { print $3 + 0 }' \
+            | sort -n | tail -n 1)
+          build_number=0
+          if [ -n "$previous" ]; then
+            recorded=$(gh release view "$series.$previous" -R "$GITHUB_REPOSITORY" --json body --jq .body \
+              | tr -d '\r' | sed -n 's/^fork-sync-inputs: //p' | head -n 1)
+            if [ "$INPUT_FORCE" != "true" ] && [ "$recorded" = "$inputs" ]; then
+              echo "$series.$previous was built from these inputs already."
+              echo "build=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            build_number=$((previous - first + 1))
+          fi
+          [ "$build_number" -le 99 ] || { echo "::error::Fork build $build_number of $tag: the version scheme holds 100 builds per crmne tag."; exit 1; }
+          version=$(fork_version "$tag" "$build_number")
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::The fork already has a release v$version."
+            exit 1
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "inputs=$inputs" >> "$GITHUB_OUTPUT"
+
+          git switch --detach "$upstream_sha"
 
           # crmne pins every librespot crate to one revision. The fork's
           # librespot branch (Berkay2002/librespot, which perf/prefetch points
@@ -138,8 +198,6 @@ jobs:
           fi
 
           for branch in $branches; do
-            git rev-parse --verify --quiet "origin/$branch" >/dev/null \
-              || fail "fork-sync: missing branch $branch" "$branch is listed in .github/fork-branches.txt but does not exist in the fork. Building $tag stopped."
             if ! git merge --no-ff --no-edit -m "Merge $branch into $tag" "origin/$branch"; then
               files=$(git diff --name-only --diff-filter=U | sed 's/^/- /')
               git merge --abort || true
@@ -151,8 +209,18 @@ jobs:
             fi
           done
 
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
-          [ "v$version" = "$tag" ] || { echo "::error::Cargo.toml says $version but the tag is $tag"; exit 1; }
+          current=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          [ "v$current" = "$tag" ] || { echo "::error::Cargo.toml says $current but the tag is $tag"; exit 1; }
+
+          # The binary, the installer and the updater all take the fork's
+          # version from here.
+          sed -i '0,/^version = ".*"/s//version = "'"$version"'"/' Cargo.toml
+          sed -i '/^name = "spotifast"$/{n;s/^version = ".*"/version = "'"$version"'"/}' Cargo.lock
+          [ "$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)" = "$version" ] \
+            || { echo "::error::Cargo.toml was not set to $version"; exit 1; }
+          grep -A1 '^name = "spotifast"$' Cargo.lock | grep -q "^version = \"$version\"" \
+            || { echo "::error::Cargo.lock was not set to $version"; exit 1; }
+          git commit -q -am "Fork build $version of $tag"
 
           git push --force origin HEAD:refs/heads/mine
           echo "build=true" >> "$GITHUB_OUTPUT"
@@ -259,6 +327,9 @@ jobs:
       contents: write
     env:
       TAG: ${{ needs.merge.outputs.tag }}
+      UPSTREAM_TAG: ${{ needs.merge.outputs.upstream }}
+      BUILD_NUMBER: ${{ needs.merge.outputs.build_number }}
+      INPUTS: ${{ needs.merge.outputs.inputs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -298,13 +369,17 @@ jobs:
           SHA: ${{ needs.merge.outputs.sha }}
         run: |
           {
-            echo "Spotifast $TAG from [$UPSTREAM](https://github.com/$UPSTREAM/releases/tag/$TAG) with the fork's branches merged in:"
+            echo "Spotifast $TAG is [crmne $UPSTREAM_TAG](https://github.com/$UPSTREAM/releases/tag/$UPSTREAM_TAG) with the fork's branches merged in (fork build $BUILD_NUMBER)."
             echo
             echo "Windows x64 only. Built from \`$SHA\`."
             echo
-            if [ -f "packaging/release-notes/$TAG.md" ]; then cat "packaging/release-notes/$TAG.md"; fi
+            # The next sync reads this line to know whether anything changed.
+            echo "fork-sync-inputs: $INPUTS"
+            echo
+            if [ -f "packaging/release-notes/$UPSTREAM_TAG.md" ]; then cat "packaging/release-notes/$UPSTREAM_TAG.md"; fi
           } > notes.md
-          # A forced rebuild replaces the release, and the tag with it.
-          gh release delete "$TAG" --cleanup-tag --yes >/dev/null 2>&1 || true
-          gh release create "$TAG" dist/* --target "$SHA" --title "Spotifast $TAG" \
+          # Every build is a new version and tag; an existing release is
+          # never replaced.
+          gh release create "$TAG" dist/* --target "$SHA" \
+            --title "Spotifast $TAG (crmne $UPSTREAM_TAG + fork build $BUILD_NUMBER)" \
             --notes-file notes.md --latest="$LATEST"
