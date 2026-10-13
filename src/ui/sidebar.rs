@@ -499,8 +499,10 @@ fn order_entries(app: &App, shelf: Filter, sort: LibrarySort, entries: &mut [Ent
     }
 }
 
-pub fn show(app: &mut App, ui: &mut egui::Ui) {
+pub fn show(app: &mut App, ui: &mut egui::Ui, tint: Option<egui::Color32>) {
     let palette = app.palette;
+    // The page's tint, over the panel's own colour.
+    let tint = tint.map(|tint| super::tint_top(app, tint, palette.panel));
     let expanded_art = has_expanded_art(app);
     let floating_art = app.settings.sidebar_grid && expanded_art;
     // The traffic lights float over the top-left of the sidebar now, so the
@@ -532,6 +534,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             bottom: if expanded_art { 0 } else { 8 },
         }));
     let response = panel.show(ui, |ui| {
+        if let Some(top) = tint {
+            super::paint_tint(ui, ui.clip_rect(), top, palette.panel);
+        }
         let art_rect = expanded_art.then(|| expanded_art_rect(ui));
         if let Some(rect) = art_rect.filter(|_| !floating_art) {
             reserve_expanded_art(ui, rect);
@@ -539,7 +544,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         contents(app, ui, art_rect.filter(|_| floating_art));
         if let Some(rect) = art_rect {
             if floating_art {
-                paint_grid_art_mask(app, ui, rect);
+                paint_grid_art_mask(app, ui, rect, tint);
             }
             paint_expanded_art(app, ui, rect);
         }
@@ -573,8 +578,20 @@ fn reserve_expanded_art(ui: &mut egui::Ui, rect: Rect) {
         .show(ui, |_| {});
 }
 
-/// In grid mode content continues behind the shared fixed artwork.
-fn paint_grid_art_mask(app: &App, ui: &egui::Ui, rect: Rect) {
+/// In grid mode content continues behind the shared fixed artwork, which the
+/// mask hides in the colour the sidebar has there: plain, or tinted `top` at
+/// the panel's top fading to plain.
+fn paint_grid_art_mask(app: &App, ui: &egui::Ui, rect: Rect, tint: Option<egui::Color32>) {
+    let panel = app.palette.panel;
+    let panel_top = ui.clip_rect().top();
+    let behind = |y: f32| match tint {
+        Some(top) => super::blend(
+            top,
+            panel,
+            ((y - panel_top) / super::TINT_HEIGHT).clamp(0.0, 1.0),
+        ),
+        None => panel,
+    };
     let bottom_fade_rect = Rect::from_min_max(
         pos2(ui.max_rect().left(), rect.bottom() - 64.0),
         pos2(ui.max_rect().right(), rect.bottom()),
@@ -583,15 +600,16 @@ fn paint_grid_art_mask(app: &App, ui: &egui::Ui, rect: Rect) {
         ui,
         bottom_fade_rect,
         egui::Color32::TRANSPARENT,
-        app.palette.panel,
+        behind(rect.bottom()),
     );
-    ui.painter().rect_filled(
+    super::widgets::paint_vertical_gradient(
+        ui,
         Rect::from_min_max(
             pos2(ui.max_rect().left(), rect.bottom()),
             ui.max_rect().right_bottom(),
         ),
-        0.0,
-        app.palette.panel,
+        behind(rect.bottom()),
+        behind(ui.max_rect().bottom()),
     );
 }
 
