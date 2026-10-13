@@ -2340,7 +2340,7 @@ mod tests {
     #[test]
     fn the_podcasts_shelf_leaves_out_audiobooks() {
         let (ctx, mut app) = accessible_app("library-podcasts-audiobooks");
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let chip = painted
@@ -2537,7 +2537,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| crate::ui::sidebar::show(app, ui),
+                |ui| crate::ui::sidebar::show(app, ui, None),
             );
             output.textures_delta.clear();
             output
@@ -2763,7 +2763,7 @@ mod tests {
         let (ctx, mut app) = accessible_app("library-grid-double-click");
         app.settings.sidebar_grid = true;
         app.open(Page::Search);
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let card = sidebar_text(&painted, "Sunday morning").center();
@@ -2791,7 +2791,7 @@ mod tests {
             (LibraryShelf::Podcasts, "Podcasts", Page::Podcasts),
         ] {
             let (ctx, mut app) = accessible_app(&format!("library-sort-paging-{shelf:?}"));
-            let view = crate::ui::sidebar::show;
+            let view = sidebar_view;
             app.settings.library_sort.insert(shelf, LibrarySort::Name);
             app.library.albums.next_offset = Some(50);
             app.library.artists.complete = false;
@@ -4558,6 +4558,11 @@ mod tests {
             assert_eq!(text.iter().filter(|(label, _)| label == "•").count(), 4);
         }
         app.backend.shutdown();
+    }
+
+    /// The sidebar as the tests drive it: no page tint behind it.
+    fn sidebar_view(app: &mut App, ui: &mut egui::Ui) {
+        crate::ui::sidebar::show(app, ui, None);
     }
 
     fn view_frame(
@@ -6953,7 +6958,7 @@ mod tests {
         for compact in [false, true] {
             let (ctx, mut app) = accessible_app(&format!("sidebar-double-click-{compact}"));
             app.settings.sidebar_compact = compact;
-            let view = crate::ui::sidebar::show;
+            let view = sidebar_view;
             view_frame(&ctx, &mut app, vec![], view);
             let painted = view_frame(&ctx, &mut app, vec![], view);
             let name = sidebar_text(&painted, "Sunday morning").center();
@@ -6976,7 +6981,7 @@ mod tests {
     #[test]
     fn single_clicking_a_sidebar_row_only_navigates() {
         let (ctx, mut app) = accessible_app("sidebar-single-click");
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let name = sidebar_text(&painted, "Sunday morning").center();
@@ -6999,7 +7004,7 @@ mod tests {
     #[test]
     fn double_clicking_a_sidebar_liked_row_plays_the_collection() {
         let (ctx, mut app) = accessible_app("sidebar-double-click-liked");
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let name = sidebar_text(&painted, "Liked Songs").center();
@@ -7024,7 +7029,7 @@ mod tests {
             RootlistEntry::Playlist("spotify:playlist:pl2".into()),
             RootlistEntry::FolderEnd,
         ];
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let name = sidebar_text(&painted, "Focus").center();
@@ -7041,7 +7046,7 @@ mod tests {
     #[test]
     fn double_clicking_a_sidebar_cover_plays_once() {
         let (ctx, mut app) = accessible_app("sidebar-double-click-cover");
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let name = sidebar_text(&painted, "Sunday morning");
@@ -7066,7 +7071,7 @@ mod tests {
     #[test]
     fn clicking_the_cover_of_the_playing_playlist_pauses() {
         let (ctx, mut app) = accessible_app("sidebar-cover-pause");
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         // The demo's remote snapshot plays the "Late night focus" playlist.
@@ -7095,7 +7100,7 @@ mod tests {
         let (ctx, mut app) = accessible_app("sidebar-cover-resume");
         // The demo's remote snapshot plays "Late night focus"; pause it.
         app.remote.as_mut().unwrap().state.is_playing = false;
-        let view = crate::ui::sidebar::show;
+        let view = sidebar_view;
         view_frame(&ctx, &mut app, vec![], view);
         let painted = view_frame(&ctx, &mut app, vec![], view);
         let name = sidebar_text(&painted, "Late night focus");

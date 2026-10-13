@@ -68,8 +68,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if app.lyrics_fullscreen.is_some() {
         lyrics::fullscreen(app, ui);
     } else {
+        // One tint, read once, for the sidebar and the page beside it.
+        let tint = page_tint(app);
+        ctx.data_mut(|data| data.insert_temp(egui::Id::new(FRAME_TINT), tint));
         if app.settings.sidebar_visible {
-            sidebar::show(app, ui);
+            sidebar::show(app, ui, tint);
         }
         if app.show_queue_panel {
             queue::side_panel(app, ui);
@@ -260,23 +263,14 @@ fn page_tint(app: &mut App) -> Option<Color32> {
 fn central(app: &mut App, ui: &mut egui::Ui) {
     crate::profiling::profile_scope!("ui::central");
     let palette = app.palette;
-    let tint = page_tint(app);
+    let tint = frame_tint(ui.ctx());
     egui::CentralPanel::default()
         .frame(Frame::new().fill(palette.window))
         .show(ui, |ui| {
             let rect = ui.max_rect();
             if let Some(tint) = tint {
-                let strength = if matches!(
-                    app.page(),
-                    Page::Home | Page::Search | Page::Settings | Page::Queue
-                ) {
-                    0.45
-                } else {
-                    0.85
-                };
-                let top = blend(palette.window, tint, strength);
-                let header = Rect::from_min_size(rect.min, vec2(rect.width(), 340.0));
-                widgets::paint_vertical_gradient(ui, header, top, palette.window);
+                let top = tint_top(app, tint, palette.window);
+                paint_tint(ui, rect, top, palette.window);
             }
             ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
             // egui fades a scrolled page's edge into the panel's plain
@@ -698,6 +692,39 @@ fn resize_direction(
         (0, 1) => Some((D::South, C::ResizeVertical)),
         _ => None,
     }
+}
+
+/// Where `show` leaves the page's tint for the panels shown after it, so it
+/// is read once a frame.
+const FRAME_TINT: &str = "page-tint";
+
+fn frame_tint(ctx: &egui::Context) -> Option<Color32> {
+    ctx.data(|data| data.get_temp::<Option<Color32>>(egui::Id::new(FRAME_TINT)))
+        .flatten()
+}
+
+/// How far down a panel the page's tint reaches before it is the panel's
+/// plain colour.
+const TINT_HEIGHT: f32 = 340.0;
+
+/// The colour the page's tint gives the top of a panel whose plain colour is
+/// `base`: the same strength for the sidebar and the page beside it.
+fn tint_top(app: &App, tint: Color32, base: Color32) -> Color32 {
+    let strength = if matches!(
+        app.page(),
+        Page::Home | Page::Search | Page::Settings | Page::Queue
+    ) {
+        0.45
+    } else {
+        0.85
+    };
+    blend(base, tint, strength)
+}
+
+/// Paints the tint from the top of `rect` down to `base`.
+fn paint_tint(ui: &egui::Ui, rect: Rect, top: Color32, base: Color32) {
+    let header = Rect::from_min_size(rect.min, vec2(rect.width(), TINT_HEIGHT));
+    widgets::paint_vertical_gradient(ui, header, top, base);
 }
 
 pub fn blend(base: Color32, tint: Color32, amount: f32) -> Color32 {
