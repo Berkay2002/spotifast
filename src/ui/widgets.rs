@@ -1393,6 +1393,7 @@ fn track_row_contents(
     app: &mut App,
     row: TrackRow<'_>,
 ) -> (egui::Response, Option<RowPick>) {
+    crate::profiling::profile_scope!("track_row_contents");
     let palette = app.palette;
     let row_height = if row.thin {
         theme::THIN_ROW_HEIGHT

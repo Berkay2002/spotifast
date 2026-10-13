@@ -33,6 +33,7 @@ use crate::model::{Action, Loadable, Page, ToastKind};
 use crate::theme::{self, Icon};
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
+    crate::profiling::profile_scope!("ui::show");
     let ctx = ui.ctx().clone();
     let ctx = &ctx;
     keys::handle(app, ctx);
@@ -257,6 +258,7 @@ fn page_tint(app: &mut App) -> Option<Color32> {
 }
 
 fn central(app: &mut App, ui: &mut egui::Ui) {
+    crate::profiling::profile_scope!("ui::central");
     let palette = app.palette;
     let tint = page_tint(app);
     egui::CentralPanel::default()
