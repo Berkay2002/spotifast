@@ -40,6 +40,8 @@ struct Cx<'a> {
 /// One exchange: the listener's message and everything the DJ did and said in answer.
 struct Turn<'a> {
     at: usize,
+    /// The DJ's own turn: no message of the listener's above it.
+    auto: bool,
     user: Option<&'a Line>,
     thought: Option<&'a Line>,
     tools: Vec<&'a Line>,
@@ -50,9 +52,12 @@ struct Turn<'a> {
 fn turns(lines: &[Line]) -> Vec<Turn<'_>> {
     let mut out: Vec<Turn> = Vec::new();
     for line in lines {
-        if line.kind == LineKind::User || out.is_empty() {
+        let new =
+            line.kind == LineKind::User || out.last().is_none_or(|turn| turn.auto != line.auto);
+        if new {
             out.push(Turn {
                 at: out.len(),
+                auto: line.auto,
                 user: None,
                 thought: None,
                 tools: Vec::new(),
@@ -202,6 +207,16 @@ pub fn show(app: &mut App, ui: &mut Ui) {
         let asks = app.dj_asks();
         let height = (ui.clip_rect().bottom() - ui.cursor().top()).max(160.0);
         let mut actions = Vec::new();
+        // a message just sent brings the chat back to its end, even from far up the page
+        let sent_id = Id::new("dj-messages-seen");
+        let sent = app
+            .dj
+            .lines
+            .iter()
+            .filter(|l| l.kind == LineKind::User)
+            .count();
+        let seen: usize = ui.ctx().data(|data| data.get_temp(sent_id)).unwrap_or(sent);
+        ui.ctx().data_mut(|data| data.insert_temp(sent_id, sent));
         egui::ScrollArea::vertical()
             .id_salt("dj-chat")
             .max_height(height)
@@ -211,6 +226,9 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 actions = chat(ui, &palette, app.backend.art(), &app.dj, &asks);
                 // the composer floats over the end of the chat, which ends above it
                 ui.add_space(COMPOSER_H + 40.0);
+                if sent > seen {
+                    ui.scroll_to_cursor(Some(Align::BOTTOM));
+                }
             });
         app.actions.extend(actions);
     }
@@ -551,12 +569,20 @@ fn thought_block(ui: &mut Ui, cx: &Cx, at: usize, line: &Line, thinking: bool) {
             ui.add_space(2.0);
             let (rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
             theme::paint_icon(ui, Icon::AudioLines, rect, 15.0, palette.dim);
-            let t = ui.input(|input| input.time) as f32;
-            let glow = (t * 3.0).sin() * 0.5 + 0.5;
-            let color = palette.dim.lerp_to_gamma(palette.text, glow * 0.8);
+            // reduced motion keeps the words still
+            let color = if motion::reduced(ui.ctx()) {
+                palette.secondary
+            } else {
+                let t = ui.input(|input| input.time) as f32;
+                let glow = (t * 3.0).sin() * 0.5 + 0.5;
+                palette.dim.lerp_to_gamma(palette.text, glow * 0.8)
+            };
             theme::text(ui, "Thinking", theme::regular(13.5), color);
         });
-        ui.ctx().request_repaint();
+        if !motion::reduced(ui.ctx()) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(33));
+        }
     } else {
         let label = format!("Thought for {}s", line.secs.max(1));
         if fold_header(ui, &palette, &label, open) {
@@ -593,6 +619,7 @@ fn fold_header(ui: &mut Ui, palette: &Palette, label: &str, open: bool) -> bool 
         .layout_no_wrap(label.to_string(), theme::regular(13.0), palette.dim);
     let size = vec2(galley.size().x + 26.0, 24.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
     let color = if response.hovered() {
         palette.secondary
     } else {
@@ -618,6 +645,7 @@ fn fold_header(ui: &mut Ui, palette: &Palette, label: &str, open: bool) -> bool 
         14.0,
         color,
     );
+    theme::focus_ring(ui, &response);
     response.clicked()
 }
 
@@ -951,6 +979,8 @@ fn playlist_card(
         pos2(rect.right() - 6.0, rect.bottom()),
     );
     let response = ui.interact(open, ui.id().with(("dj-open", uri)), Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open"));
+    theme::focus_ring(ui, &response);
     let color = if response.hovered() {
         palette.text
     } else {

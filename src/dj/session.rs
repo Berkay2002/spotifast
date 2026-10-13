@@ -50,6 +50,8 @@ pub struct Line {
     pub card: Option<Card>,
     /// On a `Thought`: the seconds spent thinking. On a `User` line: how long its whole answer took.
     pub secs: u32,
+    /// The DJ's own turn (autopilot, schedule): it answers no message of the listener's.
+    pub auto: bool,
 }
 
 impl Line {
@@ -59,6 +61,7 @@ impl Line {
             text: text.into(),
             card: None,
             secs: 0,
+            auto: false,
         }
     }
 }
@@ -461,7 +464,9 @@ impl Dj {
     }
 
     fn push(&mut self, kind: LineKind, text: String) {
-        self.lines.push(Line::new(kind, text));
+        let mut line = Line::new(kind, text);
+        line.auto = self.background;
+        self.lines.push(line);
         if self.lines.len() > KEPT_LINES {
             let extra = self.lines.len() - KEPT_LINES;
             self.lines.drain(..extra);
@@ -1036,6 +1041,51 @@ mod tests {
         assert!(!dj.busy);
         let f = slot.lock().unwrap().clone().unwrap();
         assert_eq!(f.asked.lock().unwrap()[0].prompt, "[events] queue low");
+    }
+
+    #[test]
+    fn the_djs_own_turn_after_a_chat_is_marked_so_it_never_joins_the_listeners_turn() {
+        let (mut dj, slot) = dj_with(
+            vec![
+                ChatEvent::Tool {
+                    text: "Searched for \"jazz\"".into(),
+                    card: None,
+                },
+                ChatEvent::Done {
+                    answer: "Here.".into(),
+                },
+            ],
+            ok_status(),
+        );
+        dj.ask("something jazzy", "sonnet", "low");
+        dj.poll();
+        assert!(dj.lines.iter().all(|l| !l.auto));
+        let f = slot.lock().unwrap().clone().unwrap();
+        *f.script.lock().unwrap() = vec![
+            ChatEvent::Tool {
+                text: "Queued 2 songs".into(),
+                card: None,
+            },
+            ChatEvent::Done {
+                answer: "Topped up the queue.".into(),
+            },
+        ];
+        dj.ask_unprompted("[events] queue low", "haiku", "low");
+        dj.poll();
+        let auto: Vec<&str> = dj
+            .lines
+            .iter()
+            .filter(|l| l.auto)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(auto, ["Queued 2 songs", "Topped up the queue."]);
+        let own: Vec<&str> = dj
+            .lines
+            .iter()
+            .filter(|l| !l.auto && l.kind == LineKind::Tool)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(own, ["Searched for \"jazz\""]);
     }
 
     #[test]

@@ -334,6 +334,8 @@ struct StoredLine {
     text: String,
     #[serde(default)]
     secs: u32,
+    #[serde(default)]
+    auto: bool,
 }
 
 /// One saved conversation.
@@ -364,6 +366,7 @@ impl Chat {
                 };
                 let mut line = Line::new(kind, l.text.clone());
                 line.secs = l.secs;
+                line.auto = l.auto;
                 Some(line)
             })
             .collect()
@@ -418,6 +421,7 @@ impl Chats {
                 .into(),
                 text: l.text.clone(),
                 secs: l.secs,
+                auto: l.auto,
             })
             .collect();
         self.chats.retain(|c| c.id != id);

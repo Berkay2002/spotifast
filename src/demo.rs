@@ -865,6 +865,7 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     text: text.to_string(),
                     card,
                     secs,
+                    auto: false,
                 };
                 let thought = "The listener wants something mellow for a late evening. Their recent \
                     plays lean towards warm electronic and downtempo, so I start from their top \
