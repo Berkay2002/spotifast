@@ -17,10 +17,22 @@ use crate::app::App;
 use crate::motion;
 use crate::theme::{self, Icon, Palette};
 
-const SLEEVE: f32 = 175.0;
-const LABEL_H: f32 = 24.0;
-const TITLES_H: f32 = 44.0;
+/// The playing sleeve; the ones up next are smaller, each a little more than the last.
+const SLEEVE: f32 = 124.0;
+const LABEL_H: f32 = 18.0;
+const TITLES_H: f32 = 34.0;
 const MAX_NEXT: usize = 12;
+/// How much of an up-next sleeve shows before the next one lies over it.
+const VISIBLE: f32 = 0.72;
+
+/// An up-next sleeve's full width and left-edge height (the right edge is a little taller).
+fn wide(k: usize) -> f32 {
+    (120.0 - 2.5 * k as f32).max(96.0)
+}
+
+fn high(k: usize) -> f32 {
+    (104.0 - 2.2 * k as f32).max(84.0)
+}
 /// Seconds: the disc sliding out, the crate shifting, a sleeve being dealt in.
 const SLIDE: f32 = 0.4;
 const SHIFT: f32 = 0.35;
@@ -305,8 +317,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         vec2(SLEEVE, SLEEVE),
     );
     let base = top.bottom() - 4.0;
-    let first = top.right() + 42.0;
-    let step = |k: usize| 108.0 + 38.0 * 0.7_f32.powi(k as i32);
+    let first = top.right() + SLEEVE * 0.24;
+    let step = |k: usize| wide(k) * VISIBLE;
     let mut lefts = Vec::with_capacity(next.len());
     let mut x = first;
     for k in 0..next.len() {
@@ -319,8 +331,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         0.0
     };
 
-    // far sleeves first, so the near ones lie over them
-    for (k, sleeve) in next.iter().enumerate().rev() {
+    // each lies over the one before it, so every one shows its left part and the last shows whole
+    for (k, sleeve) in next.iter().enumerate() {
         let born = memo
             .born
             .iter()
@@ -331,9 +343,25 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if left > rect.right() {
             continue;
         }
-        let width = step(k) - 5.0;
-        let height = (168.0 - 3.4 * k as f32).max(118.0);
-        let shade = 255 - (k * 7).min(60) as u8;
+        let width = wide(k);
+        let height = high(k);
+        let shade = 255 - (k * 8).min(80) as u8;
+        // the edge of this sleeve casts a little shadow on the one it lies over
+        if k > 0 {
+            let edge = Color32::from_black_alpha((140.0 * appear) as u8);
+            let mut mesh = Mesh::default();
+            for (x, y, color) in [
+                (left - 9.0, base - height, Color32::TRANSPARENT),
+                (left, base - height, edge),
+                (left, base, edge),
+                (left - 9.0, base, Color32::TRANSPARENT),
+            ] {
+                mesh.colored_vertex(pos2(x, y), color);
+            }
+            mesh.add_triangle(0, 1, 2);
+            mesh.add_triangle(0, 2, 3);
+            painter.add(Shape::mesh(mesh));
+        }
         let tint = Color32::from_gray(shade).gamma_multiply(appear);
         let texture = sleeve
             .cover
@@ -359,20 +387,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         }
         let clip = painter.with_clip_rect(Rect::from_min_size(
             pos2(left, base + 4.0),
-            vec2(step(k) - 8.0, 40.0),
+            vec2(step(k) - 4.0, 36.0),
         ));
         clip.text(
-            pos2(left + 2.0, base + 8.0),
+            pos2(left + 1.0, base + 7.0),
             Align2::LEFT_TOP,
             &sleeve.title,
-            theme::regular(12.0),
+            theme::regular(11.5),
             palette.secondary.gamma_multiply(appear),
         );
         clip.text(
-            pos2(left + 2.0, base + 24.0),
+            pos2(left + 1.0, base + 21.0),
             Align2::LEFT_TOP,
             &sleeve.artist,
-            theme::regular(11.0),
+            theme::regular(10.5),
             palette.dim.gamma_multiply(appear),
         );
     }
@@ -401,7 +429,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     if let Some(sleeve) = &playing {
         // from where the next sleeve was to the top of the crate
-        let from = Rect::from_min_max(pos2(first, base - 168.0), pos2(first + step(0) - 5.0, base));
+        let from = Rect::from_min_max(pos2(first, base - high(0)), pos2(first + wide(0), base));
         let at = if memo.gone.is_some() {
             Rect::from_min_max(
                 from.min + (top.min - from.min) * shift,
@@ -440,21 +468,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             palette.accent,
         );
         let clip = painter.with_clip_rect(Rect::from_min_size(
-            pos2(top.left(), top.bottom() + 6.0),
-            vec2(SLEEVE + 90.0, 40.0),
+            pos2(top.left(), top.bottom() + 5.0),
+            vec2(SLEEVE + 90.0, 36.0),
         ));
         clip.text(
-            pos2(top.left(), top.bottom() + 8.0),
+            pos2(top.left(), top.bottom() + 6.0),
             Align2::LEFT_TOP,
             &sleeve.title,
-            theme::semibold(14.0),
+            theme::semibold(13.5),
             palette.text,
         );
         clip.text(
-            pos2(top.left(), top.bottom() + 26.0),
+            pos2(top.left(), top.bottom() + 22.0),
             Align2::LEFT_TOP,
             &sleeve.artist,
-            theme::regular(13.0),
+            theme::regular(12.5),
             palette.secondary,
         );
     }

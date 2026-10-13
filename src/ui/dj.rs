@@ -591,12 +591,18 @@ fn thought_block(ui: &mut Ui, cx: &Cx, at: usize, line: &Line, thinking: bool) {
     }
     collapse(ui, id.with("body"), open, |ui| {
         let width = ui.available_width() - 16.0;
-        let galley = ui.painter().layout(
+        let mut job = LayoutJob::single_section(
             line.text.trim().to_string(),
-            egui::FontId::monospace(12.5),
-            palette.dim,
-            width,
+            TextFormat {
+                font_id: theme::regular(13.0),
+                color: palette.dim,
+                italics: true,
+                line_height: Some(19.0),
+                ..Default::default()
+            },
         );
+        job.wrap.max_width = width;
+        let galley = ui.painter().layout_job(job);
         let (rect, _) = ui.allocate_exact_size(
             vec2(ui.available_width(), galley.size().y + 10.0),
             Sense::hover(),
