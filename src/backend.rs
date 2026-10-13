@@ -245,6 +245,12 @@ pub enum ApiRequest {
         query: String,
         serial: u64,
     },
+    /// A search the AI DJ asked for: the results of each kind in `kinds`.
+    DjSearch {
+        kinds: Vec<String>,
+        query: String,
+        serial: u64,
+    },
     Artist {
         id: String,
     },
@@ -482,6 +488,10 @@ pub enum ApiResponse {
         query: String,
         serial: u64,
         result: ApiResult<Option<String>>,
+    },
+    DjSearch {
+        serial: u64,
+        result: ApiResult<SearchResults>,
     },
     Artist {
         id: String,
@@ -4123,6 +4133,10 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         ApiRequest::Search { .. } => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { kind, .. } if kind == "playlist" => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { .. } => Operation::CatalogSearch,
+        ApiRequest::DjSearch { kinds, .. } if kinds.iter().all(|kind| kind == "playlist") => {
+            Operation::PlaylistSearch
+        }
+        ApiRequest::DjSearch { .. } => Operation::CatalogSearch,
         ApiRequest::Playlist { id, .. } => Operation::PlaylistMetadata(api.playlist_access(id)),
         ApiRequest::PlaylistItems { id, .. }
         | ApiRequest::PlaylistSample { id, .. }
@@ -4625,6 +4639,17 @@ async fn handle(
             query,
             serial,
         },
+        ApiRequest::DjSearch {
+            kinds,
+            query,
+            serial,
+        } => {
+            let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
+            ApiResponse::DjSearch {
+                result: routed!(search(&query, &kinds)),
+                serial,
+            }
+        }
         ApiRequest::SearchPlaylists { query, serial } => ApiResponse::SearchPlaylists {
             result: routed!(search(&query, &["playlist"]))
                 .map(|results| results.playlists.unwrap_or_default()),

@@ -6,6 +6,7 @@ pub mod artist;
 pub mod collection;
 pub(crate) mod devices;
 mod dialogs;
+pub mod dj;
 pub mod home;
 mod keys;
 pub mod library;
@@ -266,7 +267,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
             if let Some(tint) = tint {
                 let strength = if matches!(
                     app.page(),
-                    Page::Home | Page::Search | Page::Settings | Page::Queue
+                    Page::Home | Page::Search | Page::Settings | Page::Queue | Page::Dj
                 ) {
                     0.45
                 } else {
@@ -313,6 +314,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Show(id) => show::show(app, ui, &id),
                                 Page::Radio(seed) => radio::radio(app, ui, &seed),
                                 Page::Queue => queue::page(app, ui),
+                                Page::Dj => dj::show(app, ui),
                                 Page::Settings => settings::show(app, ui),
                             }
                         });

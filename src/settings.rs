@@ -270,6 +270,12 @@ pub struct Settings {
     pub volume: u16,
     /// Whether the library sidebar is visible.
     pub sidebar_visible: bool,
+    /// Whether the AI DJ is offered: its sidebar entry and page.
+    pub dj_enabled: bool,
+    /// Claude Code model alias the DJ asks for (see `crate::dj::models`).
+    pub dj_model: String,
+    /// Claude Code effort the DJ asks for (see `crate::dj::EFFORTS`).
+    pub dj_effort: String,
     /// The playing album's art docked large at the sidebar's bottom.
     pub art_expanded: bool,
     /// Use compact single-line rows without cover art in the sidebar.
@@ -441,6 +447,9 @@ impl Default for Settings {
             player_bar_vis_click: true,
             volume: (u16::MAX as u32 * 70 / 100) as u16,
             sidebar_visible: true,
+            dj_enabled: true,
+            dj_model: "sonnet".to_string(),
+            dj_effort: "low".to_string(),
             art_expanded: false,
             sidebar_compact: false,
             sidebar_grid: false,

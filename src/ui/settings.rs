@@ -1952,6 +1952,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
     }
 
+    if needle.is_empty() || "ai dj claude music".contains(needle.as_str()) {
+        any_visible = true;
+        section(ui, &palette, "AI DJ", |ui| {
+            changed |= super::dj::settings(app, ui);
+        });
+    }
+
     if !needle.is_empty() && !any_visible {
         widgets::empty_state(
             ui,

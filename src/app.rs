@@ -603,6 +603,10 @@ pub struct App {
     /// still names it: a newer search or anything the user started since
     /// takes precedence over a search that finishes late.
     play_search_serial: u64,
+    /// The AI DJ's chat and the tool calls it has sent us.
+    pub dj: crate::dj::Dj,
+    dj_searches: HashMap<u64, dj::DjSearch>,
+    dj_search_serial: u64,
     last_album_queue: Option<(String, Instant)>,
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
@@ -841,7 +845,7 @@ impl App {
             .last_page
             .as_deref()
             .and_then(Page::decode)
-            .filter(|page| !matches!(page, Page::Settings | Page::Queue))
+            .filter(|page| !matches!(page, Page::Settings | Page::Queue | Page::Dj))
             .unwrap_or(Page::Home);
 
         let palette = settings.cached_palette().unwrap_or_else(Palette::dark);
@@ -1056,6 +1060,9 @@ impl App {
             pending_queue_batches: HashMap::new(),
             album_queue_serial: 0,
             play_search_serial: 0,
+            dj: crate::dj::Dj::new(waker.clone()),
+            dj_searches: HashMap::new(),
+            dj_search_serial: 0,
             last_album_queue: None,
             rootlist: Vec::new(),
             rootlist_cache: session.rootlist.clone(),
@@ -2464,7 +2471,7 @@ impl App {
                     self.refresh_queue(true);
                 }
             }
-            Page::Settings => {}
+            Page::Dj | Page::Settings => {}
         }
     }
 
@@ -4427,6 +4434,11 @@ impl App {
             Page::Queue => {
                 if self.network_reachable {
                     self.refresh_queue(true);
+                }
+            }
+            Page::Dj => {
+                if self.dj.status.is_none() && !self.dj.checking() {
+                    self.dj.refresh_status();
                 }
             }
             Page::Settings => {}
@@ -6838,6 +6850,7 @@ impl App {
                     self.search.playlists_pending = split;
                 }
             }
+            ApiResponse::DjSearch { serial, result } => self.dj_search_response(serial, result),
             ApiResponse::PlaySearch {
                 query,
                 serial,
@@ -10078,6 +10091,7 @@ impl App {
                 });
             }
             Action::SignOut => {
+                self.dj.shutdown();
                 self.backend.send(Command::SignOut);
                 self.history = vec![Page::Home];
                 self.history_index = 0;
@@ -10615,7 +10629,11 @@ impl App {
                     );
                 }
             }
+            Action::DjSend | Action::DjStart | Action::DjCancel | Action::DjCheck => {
+                self.dj_action(&action);
+            }
             Action::Quit => {
+                self.dj.shutdown();
                 self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -10867,6 +10885,7 @@ impl App {
             self.scrolling.stop();
         }
         self.handle_control_commands();
+        self.handle_dj();
         self.handle_events();
         self.open_pending_link();
         self.handle_media_commands();
@@ -11844,6 +11863,7 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
     }
 }
 
+mod dj;
 mod radio;
 
 #[cfg(test)]
