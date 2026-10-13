@@ -10646,6 +10646,7 @@ impl App {
             | Action::DjApprove(_)
             | Action::DjDeny(_)
             | Action::DjNewChat
+            | Action::DjRetry
             | Action::DjOpenChat(_)
             | Action::DjDeleteChat(_) => {
                 self.dj_action(&action);

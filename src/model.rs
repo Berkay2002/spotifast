@@ -1311,6 +1311,8 @@ pub enum Action {
     DjApprove(u64),
     DjDeny(u64),
     DjNewChat,
+    /// Send the listener's last message again.
+    DjRetry,
     DjOpenChat(u64),
     DjDeleteChat(u64),
     Quit,

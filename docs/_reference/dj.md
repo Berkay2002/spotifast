@@ -9,6 +9,22 @@ does not run in the cloud on Spotifast's account: it drives your own
 **Claude Code** (the `claude` program), signed in with your own Claude plan.
 Spotifast never sees your Claude login and has no key of its own.
 
+## The page
+
+The top of the page is your queue as a crate of records: the song playing
+is the sleeve in front, its disc half out and turning while it plays, and
+the songs up next fan out behind it. A change of song slides the disc out
+and the next sleeve forward; songs the DJ has just queued are marked with
+a green dot for a few seconds. With reduced motion on, the disc does not
+turn and nothing slides.
+
+Under it is the chat. For each message you see what the DJ thought (a
+collapsed "Thought for 6s", open while it is thinking), what it read and
+did (collapsed to "Used 3 tools" once it is done), the songs it queued,
+removed or put in a playlist with their covers, and its answer, with
+buttons to copy the answer or ask again. The bar at the bottom holds the
+message box, the model and how hard it thinks.
+
 ## What you need
 
 - Claude Code installed, and `claude login` run once in a terminal.
@@ -41,9 +57,11 @@ DJ is told to ignore any instructions inside them.
 ## What it asks first
 
 With **Ask before changing my library** on (the default), each change that
-alters your library waits for **Approve** or **Decline** on the DJ page:
-likes, new playlists, adding or removing songs, renaming. An unanswered
-change is declined after four minutes. Notes and scheduled tasks always
+alters your library waits for a yes or no on the DJ page: likes, new
+playlists, adding or removing songs, renaming. A new playlist shows its name,
+whether it is private and a few covers, with **Create** and **Cancel**; the
+other changes say what they would do with **Approve** and **Cancel**. An
+unanswered change is declined after four minutes. Notes and scheduled tasks always
 ask, even with that switch off, because they last beyond the chat.
 
 Playing, queueing and the other playback controls run at once and are
@@ -88,3 +106,8 @@ the DJ to Spotify only.
 
 The DJ's text is English only for now; it is not in the translation
 catalogues yet. Claude Code is the only provider.
+
+The reasoning and the cards (covers, trays) are drawn from what happened
+during the conversation and are not saved: a chat you reopen shows its
+messages, answers and the one-line log of what the DJ did. The reasoning
+appears only when the Claude Code version in use reports it.

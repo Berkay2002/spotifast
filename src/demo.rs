@@ -836,12 +836,11 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
     // `claude` whether it is installed.
     for surface in show.unwrap_or("").split(',').map(str::trim) {
         use crate::dj::{Line, LineKind, Status};
-        let line = |kind, text: &str| Line {
-            kind,
-            text: text.to_string(),
-        };
+        let line = |kind, text: &str| Line::new(kind, text);
         match surface {
-            "dj-ready" | "dj-chat" => {
+            "dj-ready" | "dj-empty" | "dj-chat" | "dj-working" | "dj-swap" | "dj-playlist"
+            | "dj-approval" => {
+                use crate::dj::{Card, CardSong};
                 app.dj.status = Some(Status {
                     installed: true,
                     logged_in: true,
@@ -849,27 +848,182 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                     version: Some("2.1.296 (Claude Code)".into()),
                     ..Status::default()
                 });
-                if surface == "dj-chat" {
-                    app.dj.lines = vec![
-                        line(
-                            LineKind::User,
-                            "Something mellow for a late evening, a bit of jazz and a bit of electronic",
-                        ),
-                        line(
-                            LineKind::Tool,
-                            "Searched for Bonobo, Khruangbin and Nils Frahm",
-                        ),
-                        line(LineKind::Tool, "Queued 8 songs"),
-                        line(
-                            LineKind::Assistant,
-                            "Queued eight slow songs that move from warm electronic into soft jazz,                              skipping anything you played in the last week. Say the word if you want                              it quieter or faster.",
-                        ),
-                        line(LineKind::User, "Quieter, and skip this one"),
-                        line(LineKind::Tool, "Skipped"),
-                        line(LineKind::Tool, "Queued 6 songs"),
-                    ];
-                    app.dj.busy = true;
-                    app.dj.phase = Some("thinking");
+                app.dj.chat_at = jiff::Zoned::now()
+                    .with()
+                    .hour(22)
+                    .minute(14)
+                    .second(0)
+                    .subsec_nanosecond(0)
+                    .build()
+                    .ok()
+                    .map(|at| at.timestamp().as_second());
+                let song = |index: usize| CardSong::track(&track(index));
+                let songs =
+                    |range: std::ops::Range<usize>| -> Vec<CardSong> { range.map(song).collect() };
+                let with = |kind, text: &str, card: Option<Card>, secs: u32| Line {
+                    kind,
+                    text: text.to_string(),
+                    card,
+                    secs,
+                };
+                let thought = "The listener wants something mellow for a late evening. Their recent \
+                    plays lean towards warm electronic and downtempo, so I start from their top \
+                    artists, then look for quieter songs by them and by similar artists.";
+                let read = with(
+                    LineKind::Tool,
+                    "Read your top artists \u{b7} 5",
+                    Some(Card::Artists {
+                        what: "top artists".into(),
+                        photos: (0..5)
+                            .map(|i| artist(i).images.get(1).map(|image| image.url.clone()))
+                            .collect(),
+                    }),
+                    0,
+                );
+                let found = with(
+                    LineKind::Tool,
+                    "Searched for \"warm downtempo\"",
+                    Some(Card::Found {
+                        what: "warm downtempo".into(),
+                        covers: (0..6)
+                            .map(|i| {
+                                let s = song(i + 3);
+                                (s.name, s.cover)
+                            })
+                            .collect(),
+                    }),
+                    0,
+                );
+                let queued = |from: usize, total: usize| {
+                    with(
+                        LineKind::Tool,
+                        &format!("Queued {total} songs"),
+                        Some(Card::Queued {
+                            songs: songs(from..from + 5),
+                            total,
+                        }),
+                        0,
+                    )
+                };
+                let ask =
+                    "Something mellow for a late evening, a bit of jazz and a bit of electronic";
+                match surface {
+                    "dj-empty" => {}
+                    "dj-chat" => {
+                        app.dj.lines = vec![
+                            with(LineKind::User, ask, None, 14),
+                            with(LineKind::Thought, thought, None, 6),
+                            read,
+                            found,
+                            queued(1, 8),
+                            line(
+                                LineKind::Assistant,
+                                "Queued **eight slow songs** that move from warm electronic into soft jazz, skipping anything you played in the last week. Say the word if you want it quieter or faster.",
+                            ),
+                        ];
+                    }
+                    "dj-working" => {
+                        app.dj.lines = vec![
+                            with(LineKind::User, ask, None, 0),
+                            with(LineKind::Thought, thought, None, 0),
+                            read,
+                        ];
+                        app.dj.busy = true;
+                        app.dj.phase = Some("thinking");
+                    }
+                    "dj-swap" => {
+                        app.dj.lines = vec![
+                            with(LineKind::User, "Quieter, and drop the first few", None, 19),
+                            with(
+                                LineKind::Thought,
+                                "They want less energy: remove the louder songs at the front and queue calmer ones in their place.",
+                                None,
+                                4,
+                            ),
+                            with(
+                                LineKind::Tool,
+                                "Removed 3 songs from the queue",
+                                Some(Card::Removed {
+                                    songs: songs(1..4),
+                                    total: 3,
+                                }),
+                                0,
+                            ),
+                            with(
+                                LineKind::Tool,
+                                "Queued 3 songs",
+                                Some(Card::Queued {
+                                    songs: songs(10..13),
+                                    total: 3,
+                                }),
+                                0,
+                            ),
+                            line(
+                                LineKind::Assistant,
+                                "Swapped the **three louder songs** for calmer ones.",
+                            ),
+                        ];
+                    }
+                    "dj-playlist" => {
+                        app.dj.lines = vec![
+                            with(
+                                LineKind::User,
+                                "Save this set as a playlist called Late evening",
+                                None,
+                                11,
+                            ),
+                            with(
+                                LineKind::Thought,
+                                "Create the playlist from the queue and put it in their library.",
+                                None,
+                                3,
+                            ),
+                            with(
+                                LineKind::Tool,
+                                "Created the playlist Late evening",
+                                Some(Card::Playlist {
+                                    name: "Late evening".into(),
+                                    uri: "spotify:playlist:pl1".into(),
+                                    created: true,
+                                    songs: songs(1..6),
+                                    total: 12,
+                                }),
+                                0,
+                            ),
+                            line(
+                                LineKind::Assistant,
+                                "Made **Late evening** with the twelve songs in your queue.",
+                            ),
+                        ];
+                    }
+                    "dj-approval" => {
+                        app.dj.lines = vec![
+                            with(
+                                LineKind::User,
+                                "Make a playlist of these called Late evening",
+                                None,
+                                0,
+                            ),
+                            with(
+                                LineKind::Thought,
+                                "Create a private playlist from the queue.",
+                                None,
+                                3,
+                            ),
+                        ];
+                        let (reply, _answer) = std::sync::mpsc::channel();
+                        app.dj.ask_approval(
+                            "Create the private playlist \"Late evening\" with 6 songs".into(),
+                            crate::dj::tools::Call::CreatePlaylist {
+                                name: "Late evening".into(),
+                                description: String::new(),
+                                uris: (1..7).map(|i| format!("spotify:track:trk{i}")).collect(),
+                                public: false,
+                            },
+                            reply,
+                        );
+                    }
+                    _ => {}
                 }
             }
             "dj-missing" => app.dj.status = Some(Status::default()),

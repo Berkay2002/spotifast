@@ -332,6 +332,8 @@ pub fn is_nothing(answer: &str) -> bool {
 struct StoredLine {
     kind: String,
     text: String,
+    #[serde(default)]
+    secs: u32,
 }
 
 /// One saved conversation.
@@ -356,13 +358,13 @@ impl Chat {
                     "user" => LineKind::User,
                     "assistant" => LineKind::Assistant,
                     "tool" => LineKind::Tool,
+                    "thought" => LineKind::Thought,
                     "error" => LineKind::Error,
                     _ => return None,
                 };
-                Some(Line {
-                    kind,
-                    text: l.text.clone(),
-                })
+                let mut line = Line::new(kind, l.text.clone());
+                line.secs = l.secs;
+                Some(line)
             })
             .collect()
     }
@@ -410,10 +412,12 @@ impl Chats {
                     LineKind::User => "user",
                     LineKind::Assistant => "assistant",
                     LineKind::Tool => "tool",
+                    LineKind::Thought => "thought",
                     LineKind::Error => "error",
                 }
                 .into(),
                 text: l.text.clone(),
+                secs: l.secs,
             })
             .collect();
         self.chats.retain(|c| c.id != id);
@@ -620,14 +624,8 @@ mod tests {
     fn chats_are_kept_newest_first_and_bounded() {
         let mut chats = Chats::default();
         let lines = vec![
-            Line {
-                kind: LineKind::User,
-                text: "something for a run".into(),
-            },
-            Line {
-                kind: LineKind::Assistant,
-                text: "Queued.".into(),
-            },
+            Line::new(LineKind::User, "something for a run"),
+            Line::new(LineKind::Assistant, "Queued."),
         ];
         chats.put(1, &[], None, 0);
         assert!(chats.all().is_empty());

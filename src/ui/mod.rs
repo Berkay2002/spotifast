@@ -7,6 +7,7 @@ pub mod collection;
 pub(crate) mod devices;
 mod dialogs;
 pub mod dj;
+mod dj_crate;
 pub mod home;
 mod keys;
 pub mod library;

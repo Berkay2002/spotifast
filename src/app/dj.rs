@@ -11,9 +11,11 @@ use super::*;
 use crate::api::models::{PlayableItem, SearchResults, Track};
 use crate::backend::{DjData, DjRead};
 use crate::dj::agent::{self, Moment};
+use crate::dj::card::{self, CARD_SONGS};
 use crate::dj::render;
 use crate::dj::session::PendingCall;
 use crate::dj::tools::{Call, Kind, RepeatKind, ToolReply, TopKind};
+use crate::dj::{Card, CardSong};
 use std::collections::VecDeque;
 use std::sync::mpsc::Sender;
 
@@ -34,6 +36,7 @@ type Reply = Sender<Result<ToolReply, String>>;
 /// catalogue and the playlist search are separate operations), merged when both are back.
 pub(super) struct DjSearch {
     reply: Reply,
+    query: String,
     kinds: Vec<Kind>,
     limit: usize,
     waiting: u8,
@@ -97,6 +100,15 @@ fn reply_ok(text: impl Into<String>, log: Option<String>) -> Result<ToolReply, S
     Ok(ToolReply {
         text: text.into(),
         log,
+        card: None,
+    })
+}
+
+fn reply_card(text: impl Into<String>, log: String, card: Card) -> Result<ToolReply, String> {
+    Ok(ToolReply {
+        text: text.into(),
+        log: Some(log),
+        card: Some(card),
     })
 }
 
@@ -188,6 +200,20 @@ impl App {
             Action::DjApprove(id) => self.dj_decide(*id, true),
             Action::DjDeny(id) => self.dj_decide(*id, false),
             Action::DjNewChat => self.dj.new_chat(),
+            Action::DjRetry => {
+                let last = self
+                    .dj
+                    .lines
+                    .iter()
+                    .rev()
+                    .find(|line| line.kind == crate::dj::LineKind::User)
+                    .map(|line| line.text.clone());
+                if let Some(text) = last
+                    && !self.dj.busy
+                {
+                    self.dj_ask(&text);
+                }
+            }
             Action::DjOpenChat(id) => self.dj.open_chat(*id),
             Action::DjDeleteChat(id) => self.dj.delete_chat(*id),
             _ => {}
@@ -312,6 +338,59 @@ impl App {
             .and_then(|id| self.library_entry(id))
             .map(|playlist| render::clean(&playlist.name))
             .unwrap_or_else(|| "a playlist".to_string())
+    }
+
+    /// The changes waiting for the listener, as the page's approval cards.
+    pub fn dj_asks(&self) -> Vec<crate::dj::card::Ask> {
+        self.dj
+            .approvals
+            .iter()
+            .map(|approval| {
+                let covers = |uris: &[String]| -> Vec<String> {
+                    uris.iter()
+                        .filter_map(|uri| self.dj_track(uri))
+                        .filter_map(|track| CardSong::track(&track).cover)
+                        .take(4)
+                        .collect()
+                };
+                match &approval.call {
+                    Call::CreatePlaylist {
+                        name, uris, public, ..
+                    } => crate::dj::card::Ask {
+                        id: approval.id,
+                        title: format!("Create playlist \u{b7} {}", render::clean(name)),
+                        detail: format!(
+                            "{} \u{b7} {}",
+                            if *public { "Public" } else { "Private" },
+                            songs(uris.len())
+                        ),
+                        covers: covers(uris),
+                        confirm: "Create",
+                    },
+                    Call::AddToPlaylist { uri, uris } => crate::dj::card::Ask {
+                        id: approval.id,
+                        title: format!("Add to {}", self.dj_playlist_name(uri)),
+                        detail: songs(uris.len()),
+                        covers: covers(uris),
+                        confirm: "Add",
+                    },
+                    Call::LikeTracks { uris } => crate::dj::card::Ask {
+                        id: approval.id,
+                        title: "Add to Liked Songs".to_string(),
+                        detail: songs(uris.len()),
+                        covers: covers(uris),
+                        confirm: "Add",
+                    },
+                    _ => crate::dj::card::Ask {
+                        id: approval.id,
+                        title: approval.summary.clone(),
+                        detail: String::new(),
+                        covers: Vec::new(),
+                        confirm: "Approve",
+                    },
+                }
+            })
+            .collect()
     }
 
     /// What a change would do, in the listener's words, for the approval card.
@@ -607,11 +686,21 @@ impl App {
                     })
                     .collect();
                 let count = songs_to_queue.len();
+                let shown = uris
+                    .iter()
+                    .filter_map(|uri| self.dj_track(uri))
+                    .take(CARD_SONGS)
+                    .map(|track| CardSong::track(&track))
+                    .collect();
                 self.actions.push(Action::QueueMany {
                     songs: songs_to_queue,
                 });
                 let said = format!("Queued {}", songs(count));
-                reply_ok(format!("{said}."), Some(said))
+                let card = Card::Queued {
+                    songs: shown,
+                    total: count,
+                };
+                reply_card(format!("{said}."), said, card)
             }
             Call::Play { uri } => {
                 let name = util::uri_id(&uri)
@@ -697,8 +786,25 @@ impl App {
                             .into(),
                     );
                 }
+                let queued = self.queued_rows_len();
+                let gone = self
+                    .queue
+                    .get()
+                    .map(|queue| {
+                        queue
+                            .queue
+                            .iter()
+                            .take(queued.min(CARD_SONGS))
+                            .map(CardSong::item)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.actions.push(Action::ClearQueue);
-                reply_ok("Cleared the queue.", Some("Cleared the queue".into()))
+                let card = Card::Removed {
+                    songs: gone,
+                    total: queued,
+                };
+                reply_card("Cleared the queue.", "Cleared the queue".into(), card)
             }
             Call::RemoveFromQueue { uris } => {
                 if !self.queue_locally_reorderable() {
@@ -729,9 +835,24 @@ impl App {
                     );
                 }
                 let count = rows.len();
+                let gone = self
+                    .queue
+                    .get()
+                    .map(|queue| {
+                        rows.iter()
+                            .filter_map(|(index, _)| queue.queue.get(*index))
+                            .take(CARD_SONGS)
+                            .map(CardSong::item)
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 self.actions.push(Action::RemoveFromQueue { rows });
                 let said = format!("Took {} out of the queue", songs(count));
-                reply_ok(format!("{said}."), Some(said))
+                let card = Card::Removed {
+                    songs: gone,
+                    total: count,
+                };
+                reply_card(format!("{said}."), said, card)
             }
             Call::TransferPlayback { device_id } => {
                 let found = self
@@ -917,6 +1038,13 @@ impl App {
             .collect();
         let skipped = before - fresh.len();
         let list = render::clean(&playlist_name);
+        let card = (!fresh.is_empty()).then(|| Card::Playlist {
+            name: list.clone(),
+            uri: format!("spotify:playlist:{playlist_id}"),
+            created: false,
+            songs: fresh.iter().take(CARD_SONGS).map(CardSong::track).collect(),
+            total: fresh.len(),
+        });
         let said = if fresh.is_empty() {
             format!(
                 "Nothing added: {} already in {list}",
@@ -940,7 +1068,11 @@ impl App {
                 format!("Added {added} to {list}, left out {skipped} it already had")
             }
         };
-        let _ = reply.send(reply_ok(format!("{said}."), Some(said)));
+        let _ = reply.send(Ok(ToolReply {
+            text: format!("{said}."),
+            log: Some(said),
+            card,
+        }));
     }
 
     fn dj_read(&mut self, read: DjRead, shape: Shape, reply: Reply) {
@@ -1014,7 +1146,19 @@ impl App {
                 self.track_cache.insert(id, track);
             }
         }
-        let text = match (data, job.shape) {
+        let read = |name: &str, count: usize, cover: Option<String>| {
+            let detail = songs(count);
+            (
+                Some(format!("Read {name} \u{b7} {detail}")),
+                Some(Card::Read {
+                    what: "songs".into(),
+                    name: name.to_string(),
+                    detail,
+                    cover,
+                }),
+            )
+        };
+        let (text, log, card) = match (data, job.shape) {
             (
                 DjData::Playlist {
                     name,
@@ -1023,16 +1167,53 @@ impl App {
                     items,
                 },
                 Shape::Playlist { offset },
-            ) => render::playlist_rows(&name, &owner, total, &items, offset),
-            (DjData::Tracks { tracks, total }, Shape::Tracks { title, offset }) => {
-                render::tracks(title, &tracks, total, offset)
+            ) => {
+                let cover = items
+                    .iter()
+                    .find_map(|item| item.playable().and_then(|p| p.image(300)))
+                    .map(str::to_string);
+                let (log, card) = read(&render::clean(&name), total as usize, cover);
+                (
+                    render::playlist_rows(&name, &owner, total, &items, offset),
+                    log,
+                    card,
+                )
             }
-            (DjData::Tracks { tracks, .. }, Shape::Info) => render::track_info(&tracks),
-            (DjData::Albums(albums), _) => render::albums(&albums),
-            (DjData::Artists(artists), _) => render::artists(&artists),
-            _ => "Spotify answered with something unexpected.".to_string(),
+            (DjData::Tracks { tracks, total }, Shape::Tracks { title, offset }) => {
+                let cover = tracks
+                    .iter()
+                    .find_map(|track| track.image(300))
+                    .map(str::to_string);
+                let count = total.map_or(tracks.len(), |total| total as usize);
+                let (log, card) = read(title, count, cover);
+                (render::tracks(title, &tracks, total, offset), log, card)
+            }
+            (DjData::Tracks { tracks, .. }, Shape::Info) => {
+                (render::track_info(&tracks), None, None)
+            }
+            (DjData::Albums(albums), _) => {
+                let log = Some(format!("Read {} albums", albums.len()));
+                (render::albums(&albums), log, None)
+            }
+            (DjData::Artists(artists), _) => {
+                let card = Card::Artists {
+                    what: "your top artists".into(),
+                    photos: artists
+                        .iter()
+                        .take(8)
+                        .map(|artist| card::picture(&artist.images))
+                        .collect(),
+                };
+                let log = Some(format!("Read your top artists \u{b7} {}", artists.len()));
+                (render::artists(&artists), log, Some(card))
+            }
+            _ => (
+                "Spotify answered with something unexpected.".to_string(),
+                None,
+                None,
+            ),
         };
-        let _ = job.reply.send(Ok(ToolReply { text, log: None }));
+        let _ = job.reply.send(Ok(ToolReply { text, log, card }));
     }
 
     fn dj_create_playlist(
@@ -1086,6 +1267,20 @@ impl App {
                 self.saved.insert(playlist.uri.clone(), true);
                 self.store_library_cache();
                 let count = job.uris.len();
+                let shown = job
+                    .uris
+                    .iter()
+                    .filter_map(|uri| self.dj_track(uri))
+                    .take(CARD_SONGS)
+                    .map(|track| CardSong::track(&track))
+                    .collect();
+                let card = Card::Playlist {
+                    name: render::clean(&playlist.name),
+                    uri: playlist.uri.clone(),
+                    created: true,
+                    songs: shown,
+                    total: count,
+                };
                 if count > 0 {
                     self.backend.api(ApiRequest::AddToPlaylist {
                         playlist_id: playlist.id.clone(),
@@ -1102,6 +1297,7 @@ impl App {
                 let _ = job.reply.send(Ok(ToolReply {
                     text: format!("{said}. | {}", playlist.uri),
                     log: Some(said),
+                    card: Some(card),
                 }));
             }
             Err(error) => {
@@ -1125,6 +1321,7 @@ impl App {
         };
         let catalogue = names(false);
         let playlists = names(true);
+        let shown_query = query.clone();
         let mut waiting = 0;
         // Serial: the job in the high bits, 0 for the catalogue part and 1 for the playlists.
         if !catalogue.is_empty() {
@@ -1147,6 +1344,7 @@ impl App {
             job,
             DjSearch {
                 reply,
+                query: shown_query,
                 kinds,
                 limit,
                 waiting,
@@ -1204,15 +1402,45 @@ impl App {
                 self.track_cache.insert(id, track);
             }
         }
-        let outcome = match job.error {
-            Some(error) if job.results == SearchResults::default() => {
-                Err(format!("The search failed: {}", render::clean(&error)))
-            }
-            _ => Ok(ToolReply {
-                text: render::search(&job.results, &job.kinds, job.limit),
-                log: None,
-            }),
-        };
+        let outcome =
+            match job.error {
+                Some(error) if job.results == SearchResults::default() => {
+                    Err(format!("The search failed: {}", render::clean(&error)))
+                }
+                _ => {
+                    let results = &job.results;
+                    let covers: Vec<(String, Option<String>)> =
+                        results
+                            .tracks
+                            .iter()
+                            .flat_map(|page| &page.items)
+                            .map(|track| {
+                                (
+                                    render::clean(&track.name),
+                                    track.image(300).map(str::to_string),
+                                )
+                            })
+                            .chain(results.artists.iter().flat_map(|page| &page.items).map(
+                                |artist| {
+                                    (render::clean(&artist.name), card::picture(&artist.images))
+                                },
+                            ))
+                            .chain(results.albums.iter().flat_map(|page| &page.items).map(
+                                |album| (render::clean(&album.name), card::picture(&album.images)),
+                            ))
+                            .chain(results.playlists.iter().flat_map(|page| &page.items).map(
+                                |list| (render::clean(&list.name), card::picture(&list.images)),
+                            ))
+                            .take(8)
+                            .collect();
+                    let what = render::clean(&job.query);
+                    Ok(ToolReply {
+                        text: render::search(&job.results, &job.kinds, job.limit),
+                        log: Some(format!("Searched for \"{what}\"")),
+                        card: Some(Card::Found { what, covers }),
+                    })
+                }
+            };
         let _ = job.reply.send(outcome);
     }
 

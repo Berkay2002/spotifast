@@ -75,6 +75,8 @@ impl Kind {
 pub struct ToolReply {
     pub text: String,
     pub log: Option<String>,
+    /// What the page draws under the log line.
+    pub card: Option<super::Card>,
 }
 
 /// What `top_items` lists.

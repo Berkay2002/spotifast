@@ -236,6 +236,20 @@ impl Mapper {
                     }
                     Some("content_block_delta")
                         if ev.pointer("/delta/type").and_then(Value::as_str)
+                            == Some("thinking_delta") =>
+                    {
+                        let t = ev
+                            .pointer("/delta/thinking")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        if !t.is_empty() {
+                            out.push(Step::Event(ChatEvent::Thinking {
+                                text: t.to_string(),
+                            }));
+                        }
+                    }
+                    Some("content_block_delta")
+                        if ev.pointer("/delta/type").and_then(Value::as_str)
                             == Some("text_delta") =>
                     {
                         let t = ev
@@ -506,7 +520,10 @@ impl ClaudeProvider {
             me.pending.fetch_sub(1, Ordering::SeqCst);
             let reply = r?;
             if let (Some(log), Some(sink)) = (reply.log, me.sink.lock().unwrap().clone()) {
-                sink(ChatEvent::Tool { text: log });
+                sink(ChatEvent::Tool {
+                    text: log,
+                    card: reply.card,
+                });
             }
             Ok(reply.text)
         })

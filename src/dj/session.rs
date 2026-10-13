@@ -8,6 +8,7 @@
 //!   over. Both directions wake the window through the shell's [`Waker`], which also works when the
 //!   window is hidden in the tray.
 
+use super::Card;
 use super::agent::{self, Chats, Feed, Memory, Schedules};
 use super::claude::{ClaudeProvider, ToolHost};
 use super::tools::{Call, ToolReply};
@@ -36,6 +37,8 @@ pub enum LineKind {
     Assistant,
     /// Something the DJ did ("Queued 8 songs").
     Tool,
+    /// The model's reasoning for the turn, right after the listener's message.
+    Thought,
     Error,
 }
 
@@ -43,6 +46,21 @@ pub enum LineKind {
 pub struct Line {
     pub kind: LineKind,
     pub text: String,
+    /// What the page draws for a tool's result (not saved with the chat).
+    pub card: Option<Card>,
+    /// On a `Thought`: the seconds spent thinking. On a `User` line: how long its whole answer took.
+    pub secs: u32,
+}
+
+impl Line {
+    pub fn new(kind: LineKind, text: impl Into<String>) -> Self {
+        Self {
+            kind,
+            text: text.into(),
+            card: None,
+            secs: 0,
+        }
+    }
 }
 
 /// A tool call waiting for the UI thread.
@@ -98,10 +116,15 @@ pub struct Dj {
     pub feed: Feed,
     chats: Chats,
     chat_id: u64,
+    /// When the open chat began (seconds since the epoch), for the stamp above it.
+    pub(crate) chat_at: Option<i64>,
     /// The turn in flight is the DJ's own (an event or a schedule), not an answer to a message.
     background: bool,
     /// The notes block the conversation was last given.
     notes_sent: Option<String>,
+    /// When the turn in flight began, and when its current stretch of thinking did.
+    turn_started: Option<Instant>,
+    thought_started: Option<Instant>,
 }
 
 impl Dj {
@@ -168,8 +191,11 @@ impl Dj {
             feed: Feed::default(),
             chats: Chats::default(),
             chat_id: 1,
+            chat_at: None,
             background: false,
             notes_sent: None,
+            turn_started: None,
+            thought_started: None,
         }
     }
 
@@ -187,6 +213,16 @@ impl Dj {
         self.chats.all()
     }
 
+    /// The open chat's id (the saved one has the same).
+    pub fn chat_id(&self) -> u64 {
+        self.chat_id
+    }
+
+    /// When the open chat began, once it has a message.
+    pub fn chat_time(&self) -> Option<i64> {
+        self.chat_at
+    }
+
     /// Starts an empty conversation; the one that was open stays saved.
     pub fn new_chat(&mut self) {
         if self.busy {
@@ -198,6 +234,7 @@ impl Dj {
         self.lines.clear();
         self.live = false;
         self.chat_id = self.chats.next_id();
+        self.chat_at = None;
         self.revision += 1;
     }
 
@@ -213,6 +250,7 @@ impl Dj {
         self.lines = chat.lines();
         self.live = false;
         self.chat_id = chat.id;
+        self.chat_at = Some(chat.updated);
         self.provider.set_session(chat.session);
         self.notes_sent = None;
         self.revision += 1;
@@ -227,6 +265,7 @@ impl Dj {
             self.lines.clear();
             self.live = false;
             self.chat_id = self.chats.next_id();
+            self.chat_at = None;
             self.revision += 1;
         }
     }
@@ -346,8 +385,12 @@ impl Dj {
         }
         if from_listener {
             self.push(LineKind::User, prompt.to_string());
+            self.chat_at
+                .get_or_insert_with(|| jiff::Timestamp::now().as_second());
         }
         self.background = !from_listener;
+        self.turn_started = Some(Instant::now());
+        self.thought_started = None;
         // the notes go along when they are new to this conversation
         let sent = match self.memory.block() {
             Some(notes) if self.notes_sent.as_deref() != Some(notes.as_str()) => {
@@ -395,6 +438,7 @@ impl Dj {
         self.busy = false;
         self.phase = None;
         self.hint = None;
+        self.chat_at = None;
         self.revision += 1;
     }
 
@@ -417,7 +461,7 @@ impl Dj {
     }
 
     fn push(&mut self, kind: LineKind, text: String) {
-        self.lines.push(Line { kind, text });
+        self.lines.push(Line::new(kind, text));
         if self.lines.len() > KEPT_LINES {
             let extra = self.lines.len() - KEPT_LINES;
             self.lines.drain(..extra);
@@ -425,10 +469,66 @@ impl Dj {
         self.revision += 1;
     }
 
+    /// The line of the listener's message the turn in flight answers.
+    fn turn_user(&self) -> Option<usize> {
+        self.lines.iter().rposition(|l| l.kind == LineKind::User)
+    }
+
+    /// Adds to the turn's reasoning, which sits right after the listener's message. The DJ's own
+    /// turns have no message to hang it on, so they show none.
+    fn think(&mut self, text: &str) {
+        if self.background {
+            return;
+        }
+        let Some(at) = self.turn_user().map(|user| user + 1) else {
+            return;
+        };
+        if self
+            .lines
+            .get(at)
+            .is_none_or(|l| l.kind != LineKind::Thought)
+        {
+            self.lines.insert(at, Line::new(LineKind::Thought, ""));
+        }
+        self.thought_started.get_or_insert_with(Instant::now);
+        self.lines[at].text.push_str(text);
+        self.revision += 1;
+    }
+
+    /// The model stopped thinking (it spoke, called a tool or finished): its time is added up.
+    fn rest(&mut self) {
+        let Some(started) = self.thought_started.take() else {
+            return;
+        };
+        let secs = started.elapsed().as_secs_f32().round() as u32;
+        if let Some(user) = self.turn_user()
+            && let Some(line) = self.lines.get_mut(user + 1)
+            && line.kind == LineKind::Thought
+        {
+            line.secs += secs;
+        }
+    }
+
+    /// The turn is over: how long it took goes on the listener's message.
+    fn finish_turn(&mut self) {
+        self.rest();
+        let Some(started) = self.turn_started.take() else {
+            return;
+        };
+        if self.background {
+            return;
+        }
+        if let Some(user) = self.turn_user() {
+            self.lines[user].secs = started.elapsed().as_secs_f32().round() as u32;
+        }
+    }
+
     fn apply(&mut self, ev: ChatEvent) {
         match ev {
             ChatEvent::Status { phase } => self.phase = Some(phase),
+            ChatEvent::Thinking { text } => self.think(&text),
             ChatEvent::Delta { text } => {
+                self.rest();
                 if self.live {
                     if let Some(last) = self.lines.last_mut() {
                         last.text.push_str(&text);
@@ -446,11 +546,16 @@ impl Dj {
                     self.revision += 1;
                 }
             }
-            ChatEvent::Tool { text } => {
+            ChatEvent::Tool { text, card } => {
+                self.rest();
                 self.live = false;
                 self.push(LineKind::Tool, text);
+                if let Some(line) = self.lines.last_mut() {
+                    line.card = card;
+                }
             }
             ChatEvent::Done { answer } => {
+                self.finish_turn();
                 self.decline_all(TURN_ENDED);
                 if self.background && agent::is_nothing(&answer) {
                     if self.live {
@@ -466,6 +571,7 @@ impl Dj {
                 self.save_chat();
             }
             ChatEvent::Cancelled => {
+                self.finish_turn();
                 self.decline_all(TURN_ENDED);
                 self.live = false;
                 self.busy = false;
@@ -474,6 +580,7 @@ impl Dj {
                 self.save_chat();
             }
             ChatEvent::Error { message, hint } => {
+                self.finish_turn();
                 self.decline_all(TURN_ENDED);
                 self.live = false;
                 self.busy = false;
@@ -595,9 +702,11 @@ mod tests {
                 ChatEvent::Reset,
                 ChatEvent::Tool {
                     text: "Searched for \"bonobo\"".into(),
+                    card: None,
                 },
                 ChatEvent::Tool {
                     text: "Queued 8 songs".into(),
+                    card: None,
                 },
                 ChatEvent::Delta {
                     text: "Eight ".into(),
@@ -632,6 +741,69 @@ mod tests {
         assert_eq!(asked[0].prompt, "start a set");
         assert_eq!(asked[0].model.as_deref(), Some("sonnet"));
         assert_eq!(asked[0].effort.as_deref(), Some("low"));
+    }
+
+    #[test]
+    fn thinking_sits_right_after_the_message_and_cards_ride_on_tool_lines() {
+        let card = Card::Queued {
+            songs: Vec::new(),
+            total: 3,
+        };
+        let (mut dj, _) = dj_with(
+            vec![
+                ChatEvent::Thinking {
+                    text: "They want ".into(),
+                },
+                ChatEvent::Thinking {
+                    text: "something calm.".into(),
+                },
+                ChatEvent::Tool {
+                    text: "Queued 3 songs".into(),
+                    card: Some(card.clone()),
+                },
+                ChatEvent::Done {
+                    answer: "Queued.".into(),
+                },
+            ],
+            ok_status(),
+        );
+        dj.ask("something calm", "sonnet", "low");
+        dj.poll();
+        let got: Vec<(LineKind, &str)> =
+            dj.lines.iter().map(|l| (l.kind, l.text.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![
+                (LineKind::User, "something calm"),
+                (LineKind::Thought, "They want something calm."),
+                (LineKind::Tool, "Queued 3 songs"),
+                (LineKind::Assistant, "Queued."),
+            ]
+        );
+        assert_eq!(dj.lines[2].card, Some(card));
+        assert!(dj.chat_time().is_some());
+    }
+
+    #[test]
+    fn the_djs_own_turns_show_no_thinking_and_new_chat_clears_the_stamp() {
+        let (mut dj, _) = dj_with(
+            vec![
+                ChatEvent::Thinking {
+                    text: "quiet queue".into(),
+                },
+                ChatEvent::Done {
+                    answer: "ok".into(),
+                },
+            ],
+            ok_status(),
+        );
+        dj.ask_unprompted("the queue is low", "sonnet", "low");
+        dj.poll();
+        assert!(dj.lines.iter().all(|l| l.kind != LineKind::Thought));
+        assert!(dj.chat_time().is_none());
+        dj.chat_at = Some(1);
+        dj.new_chat();
+        assert!(dj.chat_time().is_none());
     }
 
     #[test]
@@ -713,7 +885,7 @@ mod tests {
             .reply
             .send(Ok(ToolReply {
                 text: "skipped".into(),
-                log: None,
+                ..Default::default()
             }))
             .unwrap();
         assert_eq!(t.join().unwrap().unwrap().text, "skipped");
