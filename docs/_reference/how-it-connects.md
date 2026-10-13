@@ -154,8 +154,9 @@ current-track pickup.
   owns persistence. Flatpak can talk to `org.freedesktop.secrets` for this.
   Version 0.7.1 still uses the older unencrypted files.
   See [migration, sign-out, and storage protection](/settings-and-files/).
-- Downloaded audio and artwork, in the cache directory, within the budget
-  you set.
+- Downloaded audio, in the cache directory, within the budget you set.
+- Artwork, in the same cache directory, in its own folder capped at 512 MiB:
+  at launch, the least recently used covers above the cap are removed.
 - The first time MilkDrop opens with an empty preset folder, the two projectM
   preset packs are downloaded from GitHub (about 26 MB) and stored in the
   config directory.
