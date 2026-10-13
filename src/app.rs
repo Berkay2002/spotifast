@@ -21468,6 +21468,130 @@ mod tests {
         }
     }
 
+    /// An app whose library has the editable playlist "Mine", with the songs "old" and "new"
+    /// already seen by the DJ.
+    fn dj_add_app(page: Option<PlaylistPage>) -> App {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.library.playlists = Loadable::Loaded(vec![Playlist {
+            id: "mine".into(),
+            uri: "spotify:playlist:mine".into(),
+            name: "Mine".into(),
+            collaborative: true,
+            ..Default::default()
+        }]);
+        for id in ["old", "new"] {
+            app.track_cache.insert(
+                id.into(),
+                Track {
+                    uri: format!("spotify:track:{id}"),
+                    name: id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(page) = page {
+            app.playlist_pages.insert("mine".into(), page);
+        }
+        app
+    }
+
+    fn holds_old() -> PlaylistPage {
+        PlaylistPage {
+            items: PagedList {
+                items: vec![cached_playlist_row("spotify:track:old")],
+                total: Some(1),
+                next_offset: None,
+                loaded_once: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_dj_leaves_out_songs_a_loaded_playlist_already_holds() {
+        let mut app = dj_add_app(Some(holds_old()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist(
+            "spotify:playlist:mine",
+            &[
+                "spotify:track:old".into(),
+                "spotify:track:new".into(),
+                "spotify:track:new".into(),
+            ],
+            tx,
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine, left out 1 it already had."
+        );
+        assert!(matches!(
+            app.actions.as_slice(),
+            [Action::ConfirmAddToPlaylist { items, .. }]
+                if items.len() == 1 && items[0].uri() == "spotify:track:new"
+        ));
+
+        // #when every song is already there
+        app.actions.clear();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist("spotify:playlist:mine", &["spotify:track:old".into()], tx);
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Nothing added: that song is already in Mine."
+        );
+        assert!(app.actions.is_empty());
+    }
+
+    #[test]
+    fn the_dj_walks_an_unloaded_playlist_before_adding() {
+        let mut app = dj_add_app(None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist(
+            "spotify:playlist:mine",
+            &["spotify:track:old".into(), "spotify:track:new".into()],
+            tx,
+        );
+        assert!(rx.try_recv().is_err(), "the model is told after the check");
+        assert!(app.actions.is_empty());
+
+        // #when Spotify says the playlist already holds one of them
+        let serial = app.dj_search_serial;
+        app.dj_read_response(
+            serial,
+            Ok(crate::backend::DjData::Duplicates(vec![
+                "spotify:track:old".into(),
+            ])),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine, left out 1 it already had."
+        );
+        assert!(matches!(
+            app.actions.as_slice(),
+            [Action::ConfirmAddToPlaylist { items, .. }]
+                if items.len() == 1 && items[0].uri() == "spotify:track:new"
+        ));
+
+        // #when the check fails, the add still goes ahead
+        app.actions.clear();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist("spotify:playlist:mine", &["spotify:track:old".into()], tx);
+        let serial = app.dj_search_serial;
+        app.dj_read_response(
+            serial,
+            Err(crate::api::client::ApiError::Status {
+                status: 500,
+                message: "down".into(),
+            }),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine."
+        );
+        assert_eq!(app.actions.len(), 1);
+    }
+
     #[test]
     fn playlist_row_cache_extends_without_cloning_old_rows_or_losing_null_slots() {
         let mut app = headless_app();

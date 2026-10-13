@@ -107,14 +107,41 @@ pub enum RecentsFor {
 /// A read the AI DJ asked for, answered with one [`DjData`].
 #[derive(Clone, Debug)]
 pub enum DjRead {
-    PlaylistTracks { id: String, offset: u32, limit: u32 },
-    AlbumTracks { id: String },
-    ArtistTop { id: String },
-    ArtistAlbums { id: String, limit: u32 },
-    Liked { offset: u32, limit: u32 },
-    Tracks { ids: Vec<String> },
-    TopTracks { range: &'static str, limit: u32 },
-    TopArtists { range: &'static str, limit: u32 },
+    PlaylistTracks {
+        id: String,
+        offset: u32,
+        limit: u32,
+    },
+    AlbumTracks {
+        id: String,
+    },
+    ArtistTop {
+        id: String,
+    },
+    ArtistAlbums {
+        id: String,
+        limit: u32,
+    },
+    Liked {
+        offset: u32,
+        limit: u32,
+    },
+    Tracks {
+        ids: Vec<String>,
+    },
+    TopTracks {
+        range: &'static str,
+        limit: u32,
+    },
+    TopArtists {
+        range: &'static str,
+        limit: u32,
+    },
+    /// Which of `uris` a playlist already holds (the same walk the add dialog does).
+    PlaylistDuplicates {
+        id: String,
+        uris: Vec<String>,
+    },
 }
 
 /// What a [`DjRead`] found.
@@ -133,6 +160,7 @@ pub enum DjData {
     },
     Albums(Vec<crate::api::models::Album>),
     Artists(Vec<crate::api::models::Artist>),
+    Duplicates(Vec<String>),
 }
 
 #[derive(Clone, Debug)]
@@ -4178,7 +4206,9 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         }
         ApiRequest::DjSearch { .. } => Operation::CatalogSearch,
         ApiRequest::DjRead { read, .. } => match read {
-            DjRead::PlaylistTracks { id, .. } => Operation::PlaylistItems(api.playlist_access(id)),
+            DjRead::PlaylistTracks { id, .. } | DjRead::PlaylistDuplicates { id, .. } => {
+                Operation::PlaylistItems(api.playlist_access(id))
+            }
             DjRead::ArtistTop { .. } => Operation::ArtistTopTracks,
             DjRead::Liked { .. } | DjRead::TopTracks { .. } | DjRead::TopArtists { .. } => {
                 Operation::UserData
@@ -4766,6 +4796,9 @@ async fn handle(
                 }
                 DjRead::TopArtists { range, limit } => {
                     routed!(top_artists(range, limit)).map(|page| DjData::Artists(page.items))
+                }
+                DjRead::PlaylistDuplicates { id, uris } => {
+                    routed!(playlist_duplicates(&id, &uris)).map(DjData::Duplicates)
                 }
             };
             ApiResponse::DjRead { serial, result }

@@ -44,11 +44,22 @@ pub(super) struct DjSearch {
 
 /// How a read's data is told back to the model.
 enum Shape {
-    Playlist { offset: u32 },
-    Tracks { title: &'static str, offset: u32 },
+    Playlist {
+        offset: u32,
+    },
+    Tracks {
+        title: &'static str,
+        offset: u32,
+    },
     Albums,
     Artists,
     Info,
+    /// An add to a playlist, waiting to hear which songs the playlist already holds.
+    Add {
+        playlist_id: String,
+        playlist_name: String,
+        tracks: Vec<Track>,
+    },
 }
 
 pub(super) struct DjReadJob {
@@ -518,6 +529,7 @@ impl App {
                 uris,
                 public,
             } => self.dj_create_playlist(name, description, uris, public, reply),
+            Call::AddToPlaylist { uri, uris } => self.dj_add_to_playlist(&uri, &uris, reply),
             other => {
                 let out = self.dj_sync(other);
                 let _ = reply.send(out);
@@ -749,19 +761,6 @@ impl App {
                 let said = format!("Removed {} from Liked Songs", songs(count));
                 reply_ok(format!("{said}."), Some(said))
             }
-            Call::AddToPlaylist { uri, uris } => {
-                let (id, name) = self.dj_editable(&uri)?;
-                let tracks = self.dj_known_tracks(&uris)?;
-                let count = tracks.len();
-                self.actions.push(Action::ConfirmAddToPlaylist {
-                    playlist_id: id,
-                    playlist_name: name.clone(),
-                    items: tracks.into_iter().map(PlayableItem::Track).collect(),
-                    position: None,
-                });
-                let said = format!("Added {} to {}", songs(count), render::clean(&name));
-                reply_ok(format!("{said}."), Some(said))
-            }
             Call::RemoveFromPlaylist { uri, uris } => {
                 let (id, name) = self.dj_editable(&uri)?;
                 let count = uris.len();
@@ -856,8 +855,92 @@ impl App {
             | Call::LikedTracks { .. }
             | Call::TrackInfo { .. }
             | Call::TopItems { .. }
-            | Call::CreatePlaylist { .. } => Err("Unsupported here.".into()),
+            | Call::CreatePlaylist { .. }
+            | Call::AddToPlaylist { .. } => Err("Unsupported here.".into()),
         }
+    }
+
+    /// Adds songs to one of the listener's playlists, leaving out those it already holds (and
+    /// repeats within the request). The rows already loaded answer it when they can; otherwise
+    /// the playlist is walked, as the add dialog does, and the add finishes in
+    /// `dj_read_response`.
+    pub(super) fn dj_add_to_playlist(&mut self, uri: &str, uris: &[String], reply: Reply) {
+        let (id, name) = match self.dj_editable(uri) {
+            Ok(found) => found,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let mut tracks = match self.dj_known_tracks(uris) {
+            Ok(tracks) => tracks,
+            Err(error) => {
+                let _ = reply.send(Err(error));
+                return;
+            }
+        };
+        let mut once = HashSet::new();
+        tracks.retain(|track| once.insert(track.uri.clone()));
+        let items: Vec<PlayableItem> = tracks.iter().cloned().map(PlayableItem::Track).collect();
+        match self.local_playlist_duplicates(&id, &items) {
+            Some(held) => self.dj_finish_add(id, name, tracks, &held, reply),
+            None => {
+                let uris = tracks.iter().map(|track| track.uri.clone()).collect();
+                self.dj_read(
+                    DjRead::PlaylistDuplicates {
+                        id: id.clone(),
+                        uris,
+                    },
+                    Shape::Add {
+                        playlist_id: id,
+                        playlist_name: name,
+                        tracks,
+                    },
+                    reply,
+                );
+            }
+        }
+    }
+
+    fn dj_finish_add(
+        &mut self,
+        playlist_id: String,
+        playlist_name: String,
+        tracks: Vec<Track>,
+        held: &[String],
+        reply: Reply,
+    ) {
+        let before = tracks.len();
+        let fresh: Vec<Track> = tracks
+            .into_iter()
+            .filter(|track| !held.contains(&track.uri))
+            .collect();
+        let skipped = before - fresh.len();
+        let list = render::clean(&playlist_name);
+        let said = if fresh.is_empty() {
+            format!(
+                "Nothing added: {} already in {list}",
+                if before == 1 {
+                    "that song is".to_string()
+                } else {
+                    format!("all {before} songs are")
+                }
+            )
+        } else {
+            let added = songs(fresh.len());
+            self.actions.push(Action::ConfirmAddToPlaylist {
+                playlist_id,
+                playlist_name,
+                items: fresh.into_iter().map(PlayableItem::Track).collect(),
+                position: None,
+            });
+            if skipped == 0 {
+                format!("Added {added} to {list}")
+            } else {
+                format!("Added {added} to {list}, left out {skipped} it already had")
+            }
+        };
+        let _ = reply.send(reply_ok(format!("{said}."), Some(said)));
     }
 
     fn dj_read(&mut self, read: DjRead, shape: Shape, reply: Reply) {
@@ -884,6 +967,21 @@ impl App {
             // It timed out and was answered already.
             return;
         };
+        if let Shape::Add {
+            playlist_id,
+            playlist_name,
+            tracks,
+        } = job.shape
+        {
+            // A failed check must not take away an edit the account may make (as in the add
+            // dialog): add everything and let the write report its own error.
+            let held = match result {
+                Ok(DjData::Duplicates(held)) => held,
+                _ => Vec::new(),
+            };
+            self.dj_finish_add(playlist_id, playlist_name, tracks, &held, job.reply);
+            return;
+        }
         let data = match result {
             Ok(data) => data,
             Err(error) => {
