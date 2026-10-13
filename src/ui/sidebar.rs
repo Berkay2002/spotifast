@@ -965,13 +965,8 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     {
         app.actions.push(Action::FocusSearch);
     }
-    ui.add_space(10.0);
-    ui.painter().hline(
-        ui.max_rect().x_range().shrink(4.0),
-        ui.cursor().top(),
-        egui::Stroke::new(1.0, palette.outline),
-    );
-    ui.add_space(10.0);
+    // No rule here: it would cut the page tint behind the sidebar in two.
+    ui.add_space(12.0);
 
     let filter_id = egui::Id::new("sidebar-filter");
     let mut filter = ui
