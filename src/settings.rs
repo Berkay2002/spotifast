@@ -68,23 +68,43 @@ pub struct HomeSettings {
 }
 
 /// What moves behind the player bar's controls.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PlayerBarVis {
     #[default]
     Off,
     Spectrum,
     Waveform,
+    /// The spectrum reflected about the bar's middle, bass at the centre.
+    Mirror,
+    /// The spectrum as columns of lit segments.
+    Led,
+}
+
+/// A mode this version does not know reads as off, rather than making the
+/// whole file unreadable.
+impl<'de> Deserialize<'de> for PlayerBarVis {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(match String::deserialize(deserializer)?.as_str() {
+            "spectrum" => Self::Spectrum,
+            "waveform" => Self::Waveform,
+            "mirror" => Self::Mirror,
+            "led" => Self::Led,
+            _ => Self::Off,
+        })
+    }
 }
 
 impl PlayerBarVis {
     /// The mode a click on the player bar moves to: spectrum, waveform,
-    /// then off, as Winamp's visualizer cycles.
+    /// mirror, LED, then off, as Winamp's visualizer cycles.
     pub fn next(self) -> Self {
         match self {
             Self::Off => Self::Spectrum,
             Self::Spectrum => Self::Waveform,
-            Self::Waveform => Self::Off,
+            Self::Waveform => Self::Mirror,
+            Self::Mirror => Self::Led,
+            Self::Led => Self::Off,
         }
     }
 }
@@ -1199,7 +1219,12 @@ mod tests {
         let json = serde_json::to_string(&disabled).unwrap();
         let restored: Settings = serde_json::from_str(&json).unwrap();
         assert!(!restored.player_bar_vis_click);
-        for mode in [PlayerBarVis::Spectrum, PlayerBarVis::Waveform] {
+        for mode in [
+            PlayerBarVis::Spectrum,
+            PlayerBarVis::Waveform,
+            PlayerBarVis::Mirror,
+            PlayerBarVis::Led,
+        ] {
             let settings = Settings {
                 player_bar_vis: mode,
                 ..Settings::default()
@@ -1212,7 +1237,20 @@ mod tests {
         assert_eq!(spectrum.player_bar_vis, PlayerBarVis::Spectrum);
         assert_eq!(PlayerBarVis::Off.next(), PlayerBarVis::Spectrum);
         assert_eq!(PlayerBarVis::Spectrum.next(), PlayerBarVis::Waveform);
-        assert_eq!(PlayerBarVis::Waveform.next(), PlayerBarVis::Off);
+        assert_eq!(PlayerBarVis::Waveform.next(), PlayerBarVis::Mirror);
+        assert_eq!(PlayerBarVis::Mirror.next(), PlayerBarVis::Led);
+        assert_eq!(PlayerBarVis::Led.next(), PlayerBarVis::Off);
+        // A file written before the new modes reads as it always did.
+        let waveform: Settings =
+            serde_json::from_str(r#"{"player_bar_vis":"waveform","volume":7}"#).unwrap();
+        assert_eq!(waveform.player_bar_vis, PlayerBarVis::Waveform);
+        assert_eq!(waveform.volume, 7);
+        // A mode from a newer version turns the visualizer off, and the rest
+        // of the file still loads.
+        let newer: Settings =
+            serde_json::from_str(r#"{"player_bar_vis":"plasma","volume":7}"#).unwrap();
+        assert_eq!(newer.player_bar_vis, PlayerBarVis::Off);
+        assert_eq!(newer.volume, 7);
     }
 
     #[test]

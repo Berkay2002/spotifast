@@ -1569,6 +1569,14 @@ msgstr "Spettro"
 msgid "Waveform"
 msgstr "Forma d’onda"
 
+#: src/ui/settings.rs:1034
+msgid "Mirror"
+msgstr "Specchio"
+
+#: src/ui/settings.rs:1035
+msgid "LED"
+msgstr "LED"
+
 #: src/ui/settings.rs:1209
 msgid "Proxy"
 msgstr "Proxy"

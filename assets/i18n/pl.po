@@ -1573,6 +1573,14 @@ msgstr "Widmo"
 msgid "Waveform"
 msgstr "Przebieg fali"
 
+#: src/ui/settings.rs:1034
+msgid "Mirror"
+msgstr "Lustro"
+
+#: src/ui/settings.rs:1035
+msgid "LED"
+msgstr "LED"
+
 #: src/ui/settings.rs:1209
 msgid "Proxy"
 msgstr "Proxy"

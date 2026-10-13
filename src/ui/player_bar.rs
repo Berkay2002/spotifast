@@ -35,6 +35,15 @@ const WAVE_ECHO_ALPHA: f32 = 0.18;
 const LIGHT_STRENGTH: f32 = 1.5;
 /// The gap between spectrum bars.
 const SPECTRUM_GAP: f32 = 2.0;
+/// The mirror's bars, from the midline to their tips.
+const MIRROR_ALPHA: (f32, f32) = (0.3, 0.1);
+/// The LED display's segments: lit, unlit, and the size of each, and the
+/// gap between them.
+const LED_ON_ALPHA: f32 = 0.32;
+const LED_OFF_ALPHA: f32 = 0.04;
+const LED_WIDTH: f32 = 20.0;
+const LED_HEIGHT: f32 = 3.0;
+const LED_GAP: f32 = 2.0;
 
 /// Forget this bar's animation session while the sign-in screen is shown.
 pub(crate) fn end_tint_session(ctx: &egui::Context) {
@@ -134,7 +143,7 @@ fn visualizer(app: &mut App, ui: &egui::Ui, rect: Rect, now: Option<&NowPlaying>
     let painter = ui.painter().with_clip_rect(rect);
     match mode {
         PlayerBarVis::Off => false,
-        PlayerBarVis::Spectrum => {
+        PlayerBarVis::Spectrum | PlayerBarVis::Mirror | PlayerBarVis::Led => {
             if !sounding && app.player_bar_analyser.settled() {
                 return false;
             }
@@ -147,7 +156,12 @@ fn visualizer(app: &mut App, ui: &egui::Ui, rect: Rect, now: Option<&NowPlaying>
                 .player_bar_analyser
                 .step(&samples, std::time::Instant::now());
             let peaks = app.player_bar_analyser.peaks();
-            spectrum(&painter, rect, &levels, &peaks, (low, high), strength);
+            let draw = match mode {
+                PlayerBarVis::Mirror => mirror,
+                PlayerBarVis::Led => led,
+                _ => spectrum,
+            };
+            draw(&painter, rect, &levels, &peaks, (low, high), strength);
             sounding || !app.player_bar_analyser.settled()
         }
         PlayerBarVis::Waveform => {
@@ -295,6 +309,115 @@ fn spectrum(
         }
     }
     painter.add(egui::Shape::mesh(mesh));
+}
+
+/// The spectrum reflected both ways about the bar's middle: the bass at the
+/// centre spreading out to the treble at either end, each bar reaching up
+/// and down from the midline as far as its band is loud.
+fn mirror(
+    painter: &egui::Painter,
+    rect: Rect,
+    levels: &[f32],
+    _peaks: &[f32],
+    (low, high): (Color32, Color32),
+    strength: f32,
+) {
+    let bands = levels.len();
+    let slots = bands * 2;
+    let width = (rect.width() - SPECTRUM_GAP * (slots - 1) as f32) / slots as f32;
+    let midline = rect.center().y;
+    let reach = rect.height() / 2.0 - 2.0;
+    let mut mesh = egui::Mesh::default();
+    for slot in 0..slots {
+        let band = mirrored_band(slot, bands);
+        let level = levels[band];
+        let half = level * reach;
+        if half < 0.5 {
+            continue;
+        }
+        let left = rect.left() + slot as f32 * (width + SPECTRUM_GAP);
+        let colour = low.lerp_to_gamma(high, band as f32 / (bands - 1) as f32);
+        let (centre, tip) = (MIRROR_ALPHA.0 * strength, MIRROR_ALPHA.1 * strength);
+        let core = colour.gamma_multiply(centre);
+        let tip = colour.gamma_multiply(centre + (tip - centre) * level);
+        let upper = Rect::from_min_max(pos2(left, midline - half), pos2(left + width, midline));
+        let lower = Rect::from_min_max(pos2(left, midline), pos2(left + width, midline + half));
+        shaded(&mut mesh, upper, tip, core);
+        shaded(&mut mesh, lower, core, tip);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// Which of `bands` bands the mirror draws in `slot` of twice as many: the
+/// left half runs from the treble in to the bass, the right half back out.
+fn mirrored_band(slot: usize, bands: usize) -> usize {
+    if slot < bands {
+        bands - 1 - slot
+    } else {
+        slot - bands
+    }
+}
+
+/// The spectrum as a hi-fi's LED display: the bands gathered into columns
+/// wide enough to read as blocks, each lit from the foot up to its level
+/// and swept from the bass colour at the foot to the treble colour at the
+/// top, its peak a brighter segment above, over the faint unlit panel.
+fn led(
+    painter: &egui::Painter,
+    rect: Rect,
+    levels: &[f32],
+    peaks: &[f32],
+    (low, high): (Color32, Color32),
+    strength: f32,
+) {
+    let columns =
+        (((rect.width() + LED_GAP) / (LED_WIDTH + LED_GAP)) as usize).clamp(1, levels.len());
+    let rows = (((rect.height() - LED_GAP) / (LED_HEIGHT + LED_GAP)) as usize).max(2);
+    let width = (rect.width() - LED_GAP * (columns - 1) as f32) / columns as f32;
+    let mut mesh = egui::Mesh::default();
+    for (column, (level, peak)) in grouped(levels, columns)
+        .zip(grouped(peaks, columns))
+        .enumerate()
+    {
+        let left = rect.left() + column as f32 * (width + LED_GAP);
+        let lit = lit_segments(level, rows);
+        let cap = lit_segments(peak, rows);
+        for row in 0..rows {
+            let alpha = if cap > 0 && row + 1 == cap {
+                PEAK_ALPHA
+            } else if row < lit {
+                LED_ON_ALPHA * strength
+            } else {
+                LED_OFF_ALPHA * strength
+            };
+            let colour = low
+                .lerp_to_gamma(high, row as f32 / (rows - 1) as f32)
+                .gamma_multiply(alpha);
+            let bottom = rect.bottom() - LED_GAP - row as f32 * (LED_HEIGHT + LED_GAP);
+            shaded(
+                &mut mesh,
+                Rect::from_min_max(pos2(left, bottom - LED_HEIGHT), pos2(left + width, bottom)),
+                colour,
+                colour,
+            );
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+/// `levels` gathered into `columns` (at most one per level), each the
+/// loudest of the levels it covers.
+fn grouped(levels: &[f32], columns: usize) -> impl Iterator<Item = f32> + '_ {
+    (0..columns).map(move |column| {
+        let start = column * levels.len() / columns;
+        let end = (column + 1) * levels.len() / columns;
+        levels[start..end].iter().copied().fold(0.0, f32::max)
+    })
+}
+
+/// How many of `rows` segments a level from 0 to 1 lights.
+fn lit_segments(level: f32, rows: usize) -> usize {
+    ((level * rows as f32).round() as usize).min(rows)
 }
 
 /// The wave as a neon line in layers of glow, swept from the bass colour to
@@ -1087,5 +1210,39 @@ mod player_bar_tint_tests {
         // A yellow cover stays yellow, only deeper.
         let (low, _) = vis_colours(Color32::from_rgb(255, 240, 80), true);
         assert!(low.r() > low.b() && low.g() > low.b(), "{low:?}");
+    }
+
+    /// The mirror puts the bass in the middle and the treble at both ends,
+    /// each band drawn once on either side.
+    #[test]
+    fn the_mirror_reflects_the_bands_about_the_middle() {
+        let bands = 75;
+        assert_eq!(mirrored_band(0, bands), bands - 1);
+        assert_eq!(mirrored_band(bands * 2 - 1, bands), bands - 1);
+        assert_eq!(mirrored_band(bands - 1, bands), 0);
+        assert_eq!(mirrored_band(bands, bands), 0);
+        for slot in 0..bands {
+            assert_eq!(
+                mirrored_band(slot, bands),
+                mirrored_band(bands * 2 - 1 - slot, bands)
+            );
+        }
+    }
+
+    /// The LED display's columns cover every band once and show the
+    /// loudest, and a level lights its share of the segments.
+    #[test]
+    fn the_led_display_groups_bands_and_lights_segments() {
+        let levels: Vec<f32> = (0..75).map(|band| band as f32 / 74.0).collect();
+        let columns: Vec<f32> = grouped(&levels, 30).collect();
+        assert_eq!(columns.len(), 30);
+        assert_eq!(columns[29], 1.0, "the last column holds the last band");
+        assert!(columns.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(grouped(&levels, 75).collect::<Vec<_>>(), levels);
+        assert_eq!(lit_segments(0.0, 17), 0);
+        assert_eq!(lit_segments(0.02, 17), 0, "a whisper lights nothing");
+        assert_eq!(lit_segments(0.5, 17), 9);
+        assert_eq!(lit_segments(1.0, 17), 17);
+        assert_eq!(lit_segments(1.4, 17), 17);
     }
 }
