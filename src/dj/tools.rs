@@ -253,8 +253,8 @@ pub enum Call {
 }
 
 impl Call {
-    /// Whether the call changes the listener's library or playlists, or sets the DJ to run on its
-    /// own later. With "Ask before changing my library" on, the app asks first
+    /// Whether the call changes the listener's library or playlists, or leaves something that
+    /// steers later conversations (a note, a scheduled task). With "Ask before changing my library" on, the app asks first
     /// (`crate::app::dj`).
     pub fn needs_approval(&self) -> bool {
         matches!(
@@ -266,6 +266,7 @@ impl Call {
                 | Call::RemoveFromPlaylist { .. }
                 | Call::RenamePlaylist { .. }
                 | Call::ScheduleTask { .. }
+                | Call::Remember { .. }
         )
     }
 }
@@ -570,8 +571,9 @@ pub fn registry() -> Vec<Tool> {
         },
         Tool {
             name: "add_to_playlist",
-            description: "Add songs to the end of one of the listener's own playlists. The listener is \
-                          asked to approve first.",
+            description: "Add songs to the end of one of the listener's own playlists. It does not \
+                          skip songs already there: read playlist_tracks first when that matters. The \
+                          listener is asked to approve first.",
             schema: object(
                 json!({
                     "uri": uri("A spotify:playlist:<id> URI of a playlist the listener owns."),
@@ -1538,6 +1540,18 @@ mod tests {
             Ok(Call::CancelSchedule { id: 3 })
         );
         assert!(parse("cancel_schedule", &json!({ "id": -1 })).is_err());
+    }
+
+    #[test]
+    fn what_outlives_the_conversation_needs_approval_and_forgetting_does_not() {
+        let note = parse("remember", &json!({ "note": "no country" })).unwrap();
+        assert!(note.needs_approval());
+        assert!(
+            !parse("forget", &json!({ "note": "country" }))
+                .unwrap()
+                .needs_approval()
+        );
+        assert!(!Call::Skip.needs_approval());
     }
 
     #[test]

@@ -31,8 +31,9 @@ const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
 /// The CLI's own limit for one MCP call. The app answers a call well within this (`session.rs`);
 /// the longest wait is a call held for the listener's approval.
 const MCP_TOOL_TIMEOUT_MS: &str = "300000";
-/// Claude Code's own web tools, which are the only built-ins the DJ may be given.
-const WEB_TOOLS: &str = "WebSearch,WebFetch";
+/// Claude Code's own web search, the only built-in the DJ may be given. WebFetch stays off: a URL
+/// the model builds can carry what it has read out of the library.
+const WEB_TOOLS: &str = "WebSearch";
 
 /// Runs a validated call against the app and waits for its answer. The flag is the turn's cancel:
 /// a wait ends early when it is set.
@@ -98,7 +99,7 @@ pub fn build_args(
     for s in [
         "--allowedTools",
         if web {
-            concat!("mcp__spotifast__*", ",", "WebSearch,WebFetch")
+            concat!("mcp__spotifast__*", ",", "WebSearch")
         } else {
             ALLOWED_TOOLS
         },
@@ -192,7 +193,7 @@ impl Mapper {
     pub fn feed(&mut self, msg: &Value, cancelled: bool) -> Vec<Step> {
         let mut out = Vec::new();
         // output of a sub-agent is not this conversation's
-        if !msg.get("parent_tool_use_id").map_or(true, Value::is_null) {
+        if !msg.get("parent_tool_use_id").is_none_or(Value::is_null) {
             return out;
         }
         match msg.get("type").and_then(Value::as_str).unwrap_or_default() {
@@ -203,14 +204,15 @@ impl Mapper {
                         out.push(Step::Session(id.to_string()));
                     }
                     // OAuth reports "none"; any other source means something else would be billed
-                    if let Some(src) = msg.get("apiKeySource").and_then(Value::as_str) {
-                        if src != "none" && src != "oauth" {
-                            out.push(Step::Finished(Outcome::Failed(Failure::hinted(
+                    if let Some(src) = msg.get("apiKeySource").and_then(Value::as_str)
+                        && src != "none"
+                        && src != "oauth"
+                    {
+                        out.push(Step::Finished(Outcome::Failed(Failure::hinted(
                                 "Claude Code is set to use an API key, not your Claude plan. Spotifast only uses \
                                  your plan (`claude login`), so it stopped.",
                                 "env",
                             ))));
-                        }
                     }
                 }
             }
@@ -523,14 +525,13 @@ impl ClaudeProvider {
             return Err(Failure::new("Spotifast is closing."));
         }
         let mut st = self.state.lock().unwrap();
-        if let Some(r) = &st.running {
-            if r.proc.is_alive()
-                && r.model.as_deref() == model
-                && r.effort.as_deref() == effort
-                && r.web == web
-            {
-                return Ok(r.proc.clone());
-            }
+        if let Some(r) = &st.running
+            && r.proc.is_alive()
+            && r.model.as_deref() == model
+            && r.effort.as_deref() == effort
+            && r.web == web
+        {
+            return Ok(r.proc.clone());
         }
         if let Some(old) = st.running.take() {
             old.close();
@@ -922,12 +923,15 @@ mod tests {
         assert_eq!(off[at(&off, "--tools") + 1], "");
         assert_eq!(off[at(&off, "--allowedTools") + 1], "mcp__spotifast__*");
         let on = build_args(Path::new("c.json"), None, None, None, true);
-        assert_eq!(on[at(&on, "--tools") + 1], "WebSearch,WebFetch");
+        assert_eq!(on[at(&on, "--tools") + 1], "WebSearch");
         assert_eq!(
             on[at(&on, "--allowedTools") + 1],
-            "mcp__spotifast__*,WebSearch,WebFetch"
+            "mcp__spotifast__*,WebSearch"
         );
-        assert!(!on.iter().any(|x| x.contains("Bash") || x.contains("Edit")));
+        assert!(
+            !on.iter()
+                .any(|x| x.contains("Bash") || x.contains("Edit") || x.contains("WebFetch"))
+        );
     }
 
     #[test]

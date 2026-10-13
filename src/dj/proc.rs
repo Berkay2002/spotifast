@@ -105,10 +105,10 @@ impl Proc {
                     if !line.starts_with('{') {
                         continue;
                     }
-                    if let Ok(v) = serde_json::from_str::<Value>(line) {
-                        if tx.send(v).is_err() {
-                            break;
-                        }
+                    if let Ok(v) = serde_json::from_str::<Value>(line)
+                        && tx.send(v).is_err()
+                    {
+                        break;
                     }
                 }
                 alive.store(false, Ordering::SeqCst);

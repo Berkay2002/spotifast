@@ -218,7 +218,13 @@ impl Dj {
     pub fn delete_chat(&mut self, id: u64) {
         self.chats.delete(id);
         if id == self.chat_id && !self.busy {
-            self.new_chat();
+            // not `new_chat`: that would save the chat that was just deleted
+            self.provider.set_session(None);
+            self.notes_sent = None;
+            self.lines.clear();
+            self.live = false;
+            self.chat_id = self.chats.next_id();
+            self.revision += 1;
         }
     }
 
@@ -280,6 +286,12 @@ impl Dj {
             self.revision += 1;
         }
         out
+    }
+
+    /// Whether the turn in flight is the DJ's own (an event or a schedule) and not an answer to
+    /// something the listener just typed.
+    pub fn unprompted(&self) -> bool {
+        self.busy && self.background
     }
 
     /// Adds a line the DJ did not say (the app's own note in the activity log).
@@ -754,6 +766,116 @@ mod tests {
             ..Status::default()
         };
         assert_eq!(blocker(&env).unwrap(), "env refuses");
+    }
+
+    type Answer = Result<ToolReply, String>;
+
+    fn waiting_call() -> (Receiver<Answer>, Sender<Answer>) {
+        let (tx, rx) = mpsc::channel();
+        (rx, tx)
+    }
+
+    #[test]
+    fn a_change_waits_for_an_answer_and_is_declined_when_none_comes() {
+        let (mut dj, _) = dj_with(Vec::new(), ok_status());
+        let (rx, tx) = waiting_call();
+        dj.ask_approval(
+            "Add 2 songs to \"Run\"".into(),
+            Call::LikeTracks { uris: Vec::new() },
+            tx,
+        );
+        assert_eq!(dj.approvals.len(), 1);
+        let id = dj.approvals[0].id;
+        // not yet late
+        assert!(dj.expire_approvals().is_empty());
+        assert!(rx.try_recv().is_err());
+        dj.approvals[0].asked = Instant::now() - APPROVAL_WAIT - Duration::from_secs(1);
+        let expired = dj.expire_approvals();
+        assert_eq!(expired.len(), 1);
+        assert!(
+            rx.recv()
+                .unwrap()
+                .unwrap_err()
+                .contains("nothing was changed")
+        );
+        assert!(dj.take_approval(id).is_none());
+    }
+
+    #[test]
+    fn stopping_the_dj_declines_every_waiting_change() {
+        let (mut dj, _) = dj_with(Vec::new(), ok_status());
+        let (rx1, tx1) = waiting_call();
+        let (rx2, tx2) = waiting_call();
+        dj.ask_approval("one".into(), Call::Skip, tx1);
+        dj.ask_approval("two".into(), Call::Skip, tx2);
+        let first = dj.approvals[0].id;
+        let second = dj.approvals[1].id;
+        assert_ne!(first, second);
+        let taken = dj.take_approval(first).unwrap();
+        assert_eq!(taken.summary, "one");
+        dj.cancel();
+        assert!(rx2.recv().unwrap().is_err());
+        assert!(
+            rx1.try_recv().is_err(),
+            "a taken approval is the app's to answer"
+        );
+        assert!(dj.approvals.is_empty());
+    }
+
+    #[test]
+    fn an_unprompted_turn_shows_no_message_and_a_quiet_answer_leaves_no_line() {
+        let (mut dj, slot) = dj_with(
+            vec![ChatEvent::Done {
+                answer: "ok".into(),
+            }],
+            ok_status(),
+        );
+        dj.ask_unprompted("[events] queue low", "haiku", "low");
+        dj.poll();
+        assert!(dj.lines.is_empty());
+        assert!(!dj.busy);
+        let f = slot.lock().unwrap().clone().unwrap();
+        assert_eq!(f.asked.lock().unwrap()[0].prompt, "[events] queue low");
+    }
+
+    #[test]
+    fn notes_go_along_once_and_again_when_they_change() {
+        let (mut dj, slot) = dj_with(Vec::new(), ok_status());
+        dj.memory.remember("no country").unwrap();
+        dj.ask("one", "sonnet", "low");
+        dj.busy = false;
+        dj.ask("two", "sonnet", "low");
+        dj.busy = false;
+        dj.memory.remember("likes jazz").unwrap();
+        dj.ask("three", "sonnet", "low");
+        let f = slot.lock().unwrap().clone().unwrap();
+        let asked = f.asked.lock().unwrap();
+        assert!(asked[0].prompt.contains("no country") && asked[0].prompt.ends_with("one"));
+        assert_eq!(asked[1].prompt, "two");
+        assert!(asked[2].prompt.contains("likes jazz"));
+    }
+
+    #[test]
+    fn a_finished_chat_is_saved_and_can_be_reopened() {
+        let (mut dj, _) = dj_with(
+            vec![ChatEvent::Done {
+                answer: "Queued.".into(),
+            }],
+            ok_status(),
+        );
+        dj.ask("something for a run", "sonnet", "low");
+        dj.poll();
+        assert_eq!(dj.chats().len(), 1);
+        assert_eq!(dj.chats()[0].title, "something for a run");
+        let id = dj.chats()[0].id;
+        dj.new_chat();
+        assert!(dj.lines.is_empty());
+        dj.open_chat(id);
+        assert_eq!(dj.lines.len(), 2);
+        assert_eq!(dj.lines[1].text, "Queued.");
+        dj.delete_chat(id);
+        assert!(dj.chats().is_empty());
+        assert!(dj.lines.is_empty());
     }
 
     #[test]

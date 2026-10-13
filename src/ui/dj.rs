@@ -31,7 +31,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     let blocker = app.dj.status.as_ref().and_then(crate::dj::session::blocker);
     if let Some(message) = &blocker {
-        wrapped(ui, &message, theme::regular(14.0), palette.warning);
+        wrapped(ui, message, theme::regular(14.0), palette.warning);
         ui.add_space(8.0);
         let label = if app.dj.checking() {
             "Checking…"
@@ -101,6 +101,38 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         theme::text(ui, hint.clone(), theme::regular(12.5), palette.secondary);
         ui.add_space(6.0);
     }
+    // changes the DJ asked for and the listener has not answered
+    let waiting: Vec<(u64, String)> = app
+        .dj
+        .approvals
+        .iter()
+        .map(|a| (a.id, a.summary.clone()))
+        .collect();
+    if !waiting.is_empty() {
+        // the unanswered ones time out, so the page keeps ticking
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs(1));
+    }
+    for (id, summary) in waiting {
+        ui.add_space(4.0);
+        theme::text(
+            ui,
+            "The DJ wants to:",
+            theme::semibold(13.0),
+            palette.secondary,
+        );
+        wrapped(ui, &summary, theme::regular(14.5), palette.text);
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            if theme::pill_button(ui, &palette, "Approve", true).clicked() {
+                app.actions.push(Action::DjApprove(id));
+            }
+            if theme::pill_button(ui, &palette, "Decline", false).clicked() {
+                app.actions.push(Action::DjDeny(id));
+            }
+        });
+        ui.add_space(8.0);
+    }
 
     ui.add_space(8.0);
     let id = egui::Id::new("dj-input");
@@ -137,6 +169,94 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
             if widgets::switch(ui, &palette, "AI DJ", &mut app.settings.dj_enabled).changed() {
                 changed = true;
             }
+        },
+    );
+    widgets::setting_row(
+        ui,
+        &palette,
+        "Ask before changing my library",
+        "The DJ asks you to approve each like, playlist change or scheduled task before it happens.",
+        |ui| {
+            if widgets::switch(
+                ui,
+                &palette,
+                "Ask before changing my library",
+                &mut app.settings.dj_confirm_writes,
+            )
+            .changed()
+            {
+                changed = true;
+            }
+        },
+    );
+    widgets::setting_row(
+        ui,
+        &palette,
+        "Let the DJ search the web",
+        "Lets the DJ use Claude Code's own web search to look up music facts. The search words it chooses go to Claude's search; it cannot open pages.",
+        |ui| {
+            if widgets::switch(
+                ui,
+                &palette,
+                "Let the DJ search the web",
+                &mut app.settings.dj_web,
+            )
+            .changed()
+            {
+                changed = true;
+            }
+        },
+    );
+    widgets::setting_row(
+        ui,
+        &palette,
+        "Autopilot",
+        "While Spotifast is open, the DJ tops up the queue when it runs low and reacts to skips. It uses your Claude plan.",
+        |ui| {
+            if widgets::switch(ui, &palette, "Autopilot", &mut app.settings.dj_autopilot).changed()
+            {
+                changed = true;
+            }
+        },
+    );
+    widgets::setting_row(
+        ui,
+        &palette,
+        "Background model",
+        "The model for the DJ's own turns (autopilot, scheduled tasks). A smaller one costs less of your plan.",
+        |ui| {
+            let current = app.settings.dj_background_model.clone();
+            let shown = if current.is_empty() {
+                "Same as the DJ model".to_string()
+            } else {
+                crate::dj::models()
+                    .into_iter()
+                    .find(|m| m.id == current)
+                    .map_or_else(|| current.clone(), |m| m.name)
+            };
+            egui::ComboBox::from_id_salt("dj_background_model")
+                .selected_text(shown)
+                .width(200.0_f32.min(ui.available_width()))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_empty(), "Same as the DJ model")
+                        .clicked()
+                        && !current.is_empty()
+                    {
+                        app.settings.dj_background_model = String::new();
+                        changed = true;
+                    }
+                    for model in crate::dj::models() {
+                        if ui
+                            .selectable_label(current == model.id, &model.name)
+                            .clicked()
+                            && current != model.id
+                        {
+                            app.settings.dj_background_model = model.id;
+                            changed = true;
+                        }
+                    }
+                });
         },
     );
     widgets::setting_row(

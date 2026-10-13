@@ -154,14 +154,13 @@ impl App {
             .create
             .as_ref()
             .is_some_and(|job| job.started.elapsed() > SEARCH_WAIT)
+            && let Some(job) = self.dj_state.create.take()
         {
-            if let Some(job) = self.dj_state.create.take() {
-                self.playlist_busy = false;
-                let _ = job.reply.send(Err(
+            self.playlist_busy = false;
+            let _ = job.reply.send(Err(
                     "Spotify took too long to create the playlist. Check the library before trying again."
                         .into(),
                 ));
-            }
         }
     }
 
@@ -195,7 +194,16 @@ impl App {
         let Some(approval) = self.dj.take_approval(id) else {
             return;
         };
-        if approve {
+        if approve && approval.asked.elapsed() > crate::dj::session::APPROVAL_WAIT {
+            // the model was told nothing changed: it must stay true
+            self.dj.note(format!(
+                "That took too long, so nothing was changed: {}",
+                approval.summary
+            ));
+            let _ = approval.reply.send(Err(
+                "The listener did not answer in time, so nothing was changed.".to_string(),
+            ));
+        } else if approve {
             self.dj_run(approval.call, approval.reply);
         } else {
             self.dj.note(format!("Declined: {}", approval.summary));
@@ -209,7 +217,20 @@ impl App {
 
     fn dj_call(&mut self, pending: PendingCall) {
         let PendingCall { call, reply } = pending;
-        if call.needs_approval() && self.settings.dj_confirm_writes {
+        // What lasts (a note, a scheduled task) is never made by a turn nobody is watching: text
+        // from a web page or a playlist name could have steered it.
+        if self.dj.unprompted() && matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. })
+        {
+            let _ = reply.send(Err(
+                "Notes and schedules are only saved when the listener asks for them in a message."
+                    .to_string(),
+            ));
+            return;
+        }
+        // Notes and schedules are asked about even with the library gate off: they outlive the
+        // conversation.
+        let lasting = matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. });
+        if call.needs_approval() && (self.settings.dj_confirm_writes || lasting) {
             let summary = self.dj_summary(&call);
             self.dj.ask_approval(summary, call, reply);
         } else {
@@ -293,6 +314,9 @@ impl App {
                     ));
                 }
                 out
+            }
+            Call::Remember { note } => {
+                format!("Remember for next time: \"{}\"", render::clean(note))
             }
             Call::ScheduleTask { slot, prompt } => format!(
                 "Run this by itself {}: \"{}\"",
@@ -1079,10 +1103,10 @@ impl App {
                  right now. Do it now: {prompt}"
             );
             self.dj.ask_unprompted(&prompt, &model, &effort);
-        } else if self.settings.dj_autopilot {
-            if let Some(prompt) = self.dj.feed.take(now, false) {
-                self.dj.ask_unprompted(&prompt, &model, &effort);
-            }
+        } else if self.settings.dj_autopilot
+            && let Some(prompt) = self.dj.feed.take(now, false)
+        {
+            self.dj.ask_unprompted(&prompt, &model, &effort);
         }
     }
 
