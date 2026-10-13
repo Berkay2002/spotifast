@@ -24,7 +24,10 @@ local playback:
    browser approval and keeps an independent reusable credential. Spotify Premium
    is required. While it is signed in, its session also reads the playlists
    the shared app would otherwise be asked for: other people's, and the
-   account's own when there is no personal app. The personalized Made for you
+   account's own when there is no personal app. While the shared app is
+   turned away and has listed no playlists, the sidebar lists the account's
+   playlists from its rootlist and fills in each header over this session;
+   the shared app's list replaces them once it arrives. The personalized Made for you
    shelf needs this active session and a verified Web API grant, preferably
    personal. Spotify's private Home request receives the Web API access token as
    its `sp_t` context and the session's Login5 bearer and client token as
