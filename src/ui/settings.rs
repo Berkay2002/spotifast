@@ -1030,6 +1030,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     (PlayerBarVis::Off, gettext(locale, "Off")),
                     (PlayerBarVis::Spectrum, gettext(locale, "Spectrum")),
                     (PlayerBarVis::Waveform, gettext(locale, "Waveform")),
+                    (PlayerBarVis::Mirror, gettext(locale, "Mirror")),
+                    (PlayerBarVis::Led, gettext(locale, "LED")),
                 ];
                 let choice_gap = 6.0;
                 let choices_width = choices

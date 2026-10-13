@@ -1553,6 +1553,14 @@ msgstr "Spektrum"
 msgid "Waveform"
 msgstr "Vågform"
 
+#: src/ui/settings.rs:1034
+msgid "Mirror"
+msgstr "Spegel"
+
+#: src/ui/settings.rs:1035
+msgid "LED"
+msgstr "LED"
+
 #: src/ui/settings.rs:1209
 msgid "Proxy"
 msgstr "Proxy"

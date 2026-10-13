@@ -373,11 +373,13 @@ song, wherever the row sits.
 
 **Player bar visualizer** in **Settings > Appearance** shows the song moving
 behind the player bar's controls: **Spectrum** draws glowing bars from bass
-to treble with peaks that hang and fall, and **Waveform** draws the sound's
-wave as a glowing line, both in colours drawn from the cover. It follows the equalizer, not the volume, and moves only while the
+to treble with peaks that hang and fall, **Waveform** draws the sound's
+wave as a glowing line, **Mirror** reflects the bars about the middle with
+the bass at the centre, and **LED** lights the spectrum as columns of
+segments, all in colours drawn from the cover. It follows the equalizer, not the volume, and moves only while the
 song plays on this computer. It is off by default. Clicking the player
 bar's empty space switches it, as Winamp's visualizer did: off, then
-Spectrum, then Waveform, then off again. The visualizers draw at half their
+Spectrum, Waveform, Mirror, LED, then off again. The visualizers draw at half their
 rate while Spotifast's window is out of focus or the system saves energy, and
 not at all while nobody can see the window: minimised, in the tray, with the
 display off or the screen locked. Disable **Click player bar to change

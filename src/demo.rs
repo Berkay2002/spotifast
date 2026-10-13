@@ -885,11 +885,16 @@ pub fn apply_flags(app: &mut App, page: Option<&str>, show: Option<&str>) {
                 play_here(app);
                 app.local.playback = crate::player::Playback::Paused;
             }
-            "player-bar-spectrum" | "player-bar-waveform" => {
-                app.settings.player_bar_vis = if surface == "player-bar-spectrum" {
-                    crate::settings::PlayerBarVis::Spectrum
-                } else {
-                    crate::settings::PlayerBarVis::Waveform
+            "player-bar-spectrum"
+            | "player-bar-waveform"
+            | "player-bar-mirror"
+            | "player-bar-led" => {
+                use crate::settings::PlayerBarVis;
+                app.settings.player_bar_vis = match surface {
+                    "player-bar-spectrum" => PlayerBarVis::Spectrum,
+                    "player-bar-mirror" => PlayerBarVis::Mirror,
+                    "player-bar-led" => PlayerBarVis::Led,
+                    _ => PlayerBarVis::Waveform,
                 };
                 play_here(app);
                 app.local.playback = crate::player::Playback::Playing;
@@ -4756,6 +4761,14 @@ mod tests {
         let output = draw(&mut app);
         assert!(waveform(&output), "the waveform is drawn");
         assert!(!spectrum(&output));
+
+        // #when the mirror or the LED display is chosen
+        for mode in [PlayerBarVis::Mirror, PlayerBarVis::Led] {
+            app.settings.player_bar_vis = mode;
+            let output = draw(&mut app);
+            assert!(spectrum(&output), "{mode:?} is drawn as a mesh");
+            assert!(wants_frames(&output));
+        }
 
         // #when it is turned off
         app.settings.player_bar_vis = PlayerBarVis::Off;
