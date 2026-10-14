@@ -123,6 +123,13 @@ pub struct Dj {
     pub(crate) chat_at: Option<i64>,
     /// The turn in flight is the DJ's own (an event or a schedule), not an answer to a message.
     background: bool,
+    /// Where the DJ keeps its files, and the account they are open for.
+    dir: Option<std::path::PathBuf>,
+    account: Option<String>,
+    /// Stop was pressed: calls still arriving for the turn are refused, not run.
+    stopping: bool,
+    /// The DJ setting is off and the child was shut down for it.
+    off: bool,
     /// The notes block the conversation was last given.
     notes_sent: Option<String>,
     /// When the turn in flight began, and when its current stretch of thinking did.
@@ -141,6 +148,9 @@ impl Dj {
         let (calls_tx, calls) = mpsc::channel::<PendingCall>();
         let wake = waker.clone();
         let host: ToolHost = Arc::new(move |call: Call, cancel: &AtomicBool| {
+            if cancel.load(Ordering::SeqCst) {
+                return Err("The listener stopped the DJ, so nothing was run.".to_string());
+            }
             let needs_approval = call.needs_approval();
             let (reply, answer) = mpsc::channel();
             calls_tx
@@ -196,19 +206,56 @@ impl Dj {
             chat_id: 1,
             chat_at: None,
             background: false,
+            dir: None,
+            account: None,
+            stopping: false,
+            off: false,
             notes_sent: None,
             turn_started: None,
             thought_started: None,
         }
     }
 
-    /// Loads what the DJ kept from `dir`: its notes, its schedules and the saved chats. The
-    /// newest chat is not reopened: every start is a new conversation.
+    /// Where the DJ keeps its files. What it kept is opened per account (`set_account`), so
+    /// another account on this machine does not inherit its notes, schedules and chats.
     pub fn attach(&mut self, dir: &Path) {
-        self.memory = Memory::open(dir.join("dj-memory.json"));
-        self.schedules = Schedules::open(dir.join("dj-schedules.json"));
-        self.chats = Chats::open(dir.join("dj-chats.json"));
+        self.dir = Some(dir.to_path_buf());
+    }
+
+    /// Opens the notes, schedules and saved chats of the signed-in account. The newest chat is
+    /// not reopened: every start is a new conversation. Files from before there were accounts
+    /// (`dj-memory.json` and the others) become the first account's, once.
+    pub fn set_account(&mut self, id: &str) {
+        if self.account.as_deref() == Some(id) {
+            return;
+        }
+        let Some(dir) = self.dir.clone() else {
+            return;
+        };
+        // Spotify's ids are plain letters and digits; anything else cannot reach a file name
+        let tag: String = id
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let file = |base: &str| {
+            let mine = dir.join(format!("{base}.{tag}.json"));
+            let old = dir.join(format!("{base}.json"));
+            if !mine.exists() && old.exists() {
+                let _ = std::fs::rename(&old, &mine);
+            }
+            mine
+        };
+        self.memory = Memory::open(file("dj-memory"));
+        self.schedules = Schedules::open(file("dj-schedules"));
+        self.chats = Chats::open(file("dj-chats"));
         self.chat_id = self.chats.next_id();
+        self.account = Some(id.to_string());
     }
 
     /// The saved chats, newest first.
@@ -392,6 +439,7 @@ impl Dj {
                 .get_or_insert_with(|| jiff::Timestamp::now().as_second());
         }
         self.background = !from_listener;
+        self.stopping = false;
         self.turn_started = Some(Instant::now());
         self.thought_started = None;
         // the notes go along when they are new to this conversation
@@ -427,8 +475,29 @@ impl Dj {
 
     /// Stops the turn in flight. It ends as a `Cancelled` event.
     pub fn cancel(&mut self) {
+        self.stopping = true;
         self.decline_all("The listener stopped the DJ.");
+        self.refuse_calls("The listener stopped the DJ, so nothing was changed.");
         self.provider.cancel();
+    }
+
+    /// Answers the calls still queued with an error; none of them is run.
+    fn refuse_calls(&mut self, why: &str) {
+        for pending in self.calls.try_iter() {
+            let _ = pending.reply.send(Err(why.to_string()));
+        }
+    }
+
+    /// The DJ setting is off: the child and its tool server go, once, busy or not.
+    pub fn switch_off(&mut self) {
+        if !self.off {
+            self.off = true;
+            self.shutdown();
+        }
+    }
+
+    pub fn switch_on(&mut self) {
+        self.off = false;
     }
 
     /// App exit and sign-out: the child and its tool server go, and the chat starts over.
@@ -460,6 +529,11 @@ impl Dj {
 
     /// The tool calls waiting for an answer, oldest first.
     pub fn take_calls(&mut self) -> Vec<PendingCall> {
+        // after Stop, or with no turn in flight, a call that still arrives is not run
+        if self.stopping || !self.busy {
+            self.refuse_calls("No request is being answered right now, so nothing was run.");
+            return Vec::new();
+        }
         self.calls.try_iter().collect()
     }
 
@@ -874,6 +948,7 @@ mod tests {
     #[test]
     fn a_tool_call_crosses_to_the_ui_thread_and_back() {
         let (mut dj, slot) = dj_with(Vec::new(), ok_status());
+        dj.busy = true;
         let f = slot.lock().unwrap().clone().unwrap();
         let cancel = AtomicBool::new(false);
         let host = f.host.clone();
@@ -894,6 +969,62 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(t.join().unwrap().unwrap().text, "skipped");
+    }
+
+    #[test]
+    fn a_call_with_no_turn_in_flight_is_refused_and_not_handed_to_the_app() {
+        let (mut dj, slot) = dj_with(Vec::new(), ok_status());
+        let f = slot.lock().unwrap().clone().unwrap();
+        let cancel = AtomicBool::new(false);
+        let host = f.host.clone();
+        let t = std::thread::spawn(move || host(Call::Skip, &cancel));
+        while !t.is_finished() {
+            assert!(dj.take_calls().is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(t.join().unwrap().unwrap_err().contains("nothing was run"));
+    }
+
+    #[test]
+    fn stop_refuses_calls_that_were_queued_and_those_that_still_arrive() {
+        let (mut dj, slot) = dj_with(Vec::new(), ok_status());
+        dj.busy = true;
+        let f = slot.lock().unwrap().clone().unwrap();
+        let (host, cancel) = (f.host.clone(), Arc::new(AtomicBool::new(false)));
+        let c = cancel.clone();
+        let queued = std::thread::spawn(move || host(Call::Skip, &c));
+        std::thread::sleep(Duration::from_millis(50));
+        dj.cancel();
+        assert!(queued.join().unwrap().unwrap_err().contains("stopped"));
+        // the turn has not ended yet, and a call the model still sends is not run either
+        let (host, cancel) = (f.host.clone(), AtomicBool::new(false));
+        let late = std::thread::spawn(move || host(Call::Skip, &cancel));
+        while !late.is_finished() {
+            assert!(dj.take_calls().is_empty());
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(late.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn each_account_has_its_own_files_and_the_old_ones_go_to_the_first() {
+        let dir = std::env::temp_dir().join(format!("spotifast-dj-acc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dj-memory.json"), br#"{"notes":["no country"]}"#).unwrap();
+        let (mut dj, _) = dj_with(Vec::new(), ok_status());
+        dj.attach(&dir);
+        dj.set_account("alice");
+        assert_eq!(dj.memory.notes(), ["no country"]);
+        assert!(!dir.join("dj-memory.json").exists());
+        dj.set_account("bob");
+        assert!(dj.memory.notes().is_empty());
+        dj.memory.remember("likes jazz").unwrap();
+        dj.set_account("alice");
+        assert_eq!(dj.memory.notes(), ["no country"]);
+        dj.set_account("bob");
+        assert_eq!(dj.memory.notes(), ["likes jazz"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1281,7 +1281,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
         ui,
         &palette,
         "Ask before changing my library",
-        "The DJ asks you to approve each like, playlist change or scheduled task before it happens.",
+        "The DJ asks you to approve each like or playlist change before it happens. Removing songs, renaming and anything the DJ does on its own always ask, and so do notes and scheduled tasks.",
         |ui| {
             if widgets::switch(
                 ui,

@@ -32,11 +32,24 @@ fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
     std::fs::rename(&temporary, path)
 }
 
+/// A missing file is empty. A file that cannot be read back is set aside as `<name>.corrupt-<time>`
+/// before the DJ starts empty, so the next save does not overwrite what could be recovered.
 fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    let Ok(bytes) = std::fs::read(path) else {
+        return T::default();
+    };
+    match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            let at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(format!(".corrupt-{at}"));
+            let _ = std::fs::rename(path, path.with_file_name(name));
+            T::default()
+        }
+    }
 }
 
 /// What the DJ was asked to remember about the listener ("no country music on Sundays").
@@ -504,7 +517,16 @@ mod tests {
         m.remember("no country").unwrap();
         assert_eq!(Memory::open(path.clone()).notes(), ["no country"]);
         std::fs::write(&path, b"{ nope").unwrap();
-        assert!(Memory::open(path).notes().is_empty());
+        assert!(Memory::open(path.clone()).notes().is_empty());
+        // the damaged file is kept beside it, not overwritten by the next save
+        assert!(!path.exists());
+        let kept: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".corrupt-"))
+            .collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read(kept[0].path()).unwrap(), b"{ nope");
         let _ = std::fs::remove_dir_all(dir);
     }
 

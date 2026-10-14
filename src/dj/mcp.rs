@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// What the handler gets: tool name and arguments. Its text is what the model reads; an `Err` is
 /// a tool failure the model sees as such and reacts to.
@@ -24,8 +24,10 @@ const MAX_HEADER: usize = 16 * 1024;
 const MAX_BODY: usize = 2 * 1024 * 1024;
 /// Connections served at once; the one `claude` child needs a handful.
 const MAX_CONNECTIONS: usize = 16;
-/// A request line that does not arrive in this time is dropped (a connection that never speaks).
-const READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// The whole request head must arrive in this time, and the body in its own: a connection that
+/// never speaks, or sends a byte at a time, is dropped.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
+const BODY_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct McpServer {
     pub port: u16,
@@ -122,13 +124,37 @@ impl Request {
     }
 }
 
-fn read_request(conn: &TcpStream) -> Result<Request, (u16, &'static str)> {
+/// A connection read under one deadline for the whole of what is being read, not one per read: a
+/// peer that sends a byte at a time cannot hold a thread past it.
+struct Deadlined {
+    conn: TcpStream,
+    deadline: Instant,
+}
+
+impl Read for Deadlined {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.conn.set_read_timeout(Some(left))?;
+        self.conn.read(buf)
+    }
+}
+
+type Reader = BufReader<std::io::Take<Deadlined>>;
+
+fn reader(conn: &TcpStream, within: Duration) -> std::io::Result<Reader> {
+    let conn = Deadlined {
+        conn: conn.try_clone()?,
+        deadline: Instant::now() + within,
+    };
     // the head is read through a cap, so one endless line cannot grow a buffer before it is judged
-    let mut r = BufReader::new(
-        conn.try_clone()
-            .map_err(|_| (500, "io"))?
-            .take(MAX_HEADER as u64 + 1),
-    );
+    Ok(BufReader::new(conn.take(MAX_HEADER as u64 + 1)))
+}
+
+/// The request line and headers. The body is read after the request is authorised.
+fn read_head(r: &mut Reader) -> Result<Request, (u16, &'static str)> {
     let mut line = String::new();
     r.read_line(&mut line).map_err(|_| (400, "bad request"))?;
     let mut parts = line.split_whitespace();
@@ -162,18 +188,11 @@ fn read_request(conn: &TcpStream) -> Result<Request, (u16, &'static str)> {
     if req.header("transfer-encoding").is_some() {
         return Err((411, "send a Content-Length"));
     }
-    // the body has its own, larger cap
-    r.get_mut().set_limit(MAX_BODY as u64);
-    Ok(Request {
-        body: read_body(&mut r, &req)?,
-        ..req
-    })
+    Ok(req)
 }
 
-fn read_body(
-    r: &mut BufReader<std::io::Take<TcpStream>>,
-    req: &Request,
-) -> Result<Vec<u8>, (u16, &'static str)> {
+/// The body, with its own cap and deadline. Only called for a request that passed `authorize`.
+fn read_body(r: &mut Reader, req: &Request) -> Result<Vec<u8>, (u16, &'static str)> {
     let len: usize = req
         .header("content-length")
         .and_then(|v| v.parse().ok())
@@ -181,6 +200,9 @@ fn read_body(
     if len > MAX_BODY {
         return Err((413, "body too large"));
     }
+    r.get_mut().set_limit(MAX_BODY as u64);
+    r.get_mut().get_mut().deadline = Instant::now() + BODY_TIMEOUT;
+    // `len` is checked above, and the allocation follows the check
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).map_err(|_| (400, "short body"))?;
     Ok(body)
@@ -220,11 +242,14 @@ fn serve(mut conn: TcpStream, port: u16, token: &str, tools: &[Tool], handler: &
     // Winsock gives an accepted socket the listener's non-blocking mode: reads would fail with
     // WouldBlock whenever the request is not there yet
     let _ = conn.set_nonblocking(false);
-    let _ = conn.set_read_timeout(Some(READ_TIMEOUT));
-    let req = match read_request(&conn) {
+    let Ok(mut r) = reader(&conn, HEAD_TIMEOUT) else {
+        return write_response(&mut conn, 500, None);
+    };
+    let mut req = match read_head(&mut r) {
         Ok(r) => r,
         Err((code, _)) => return write_response(&mut conn, code, None),
     };
+    // nothing is allocated for a body before the token has been checked
     if let Err(code) = authorize(&req.headers, port, token) {
         return write_response(&mut conn, code, None);
     }
@@ -236,7 +261,11 @@ fn serve(mut conn: TcpStream, port: u16, token: &str, tools: &[Tool], handler: &
         "GET" => write_response(&mut conn, 405, None),
         "DELETE" => write_response(&mut conn, 200, None),
         "POST" => {
-            // a tool call may wait for the user: the read timeout is for the request only
+            req.body = match read_body(&mut r, &req) {
+                Ok(body) => body,
+                Err((code, _)) => return write_response(&mut conn, code, None),
+            };
+            // a tool call may wait for the user: the deadlines are for reading the request only
             let _ = conn.set_read_timeout(None);
             let msg: Value = match serde_json::from_slice(&req.body) {
                 Ok(v) => v,
@@ -404,6 +433,29 @@ mod tests {
             ("authorization", "Bearer secret"),
         ]);
         assert_eq!(authorize(&page, 4000, "secret"), Err(403));
+    }
+
+    #[test]
+    fn a_head_sent_a_byte_at_a_time_is_dropped_at_the_deadline() {
+        use std::io::Write;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let slow = std::thread::spawn(move || {
+            let mut c = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            for b in b"POST /mcp HTTP/1.1\r\nHost: x\r\n".iter().cycle().take(60) {
+                if c.write_all(&[*b]).is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        let (conn, _) = listener.accept().unwrap();
+        let started = Instant::now();
+        let mut r = reader(&conn, Duration::from_millis(300)).unwrap();
+        assert!(read_head(&mut r).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        drop(conn);
+        slow.join().unwrap();
     }
 
     fn tools() -> Arc<Vec<Tool>> {

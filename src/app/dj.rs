@@ -120,6 +120,9 @@ impl App {
     /// Once a frame: applies what the DJ's turn reported and answers its tool calls.
     pub(super) fn handle_dj(&mut self) {
         self.dj.web = self.settings.dj_web;
+        if let Some(id) = self.user_id().map(str::to_string) {
+            self.dj.set_account(&id);
+        }
         self.dj.poll();
         for pending in self.dj.take_calls() {
             if self.settings.dj_enabled {
@@ -136,11 +139,11 @@ impl App {
         }
         self.dj_expire_jobs();
         if !self.settings.dj_enabled {
-            if self.dj.busy {
-                self.dj.shutdown();
-            }
+            // the child and its tool server go with the setting, busy or not
+            self.dj.switch_off();
             return;
         }
+        self.dj.switch_on();
         self.dj_background();
     }
 
@@ -278,10 +281,7 @@ impl App {
             let _ = reply.send(Err(error));
             return;
         }
-        // Notes and schedules are asked about even with the library gate off: they outlive the
-        // conversation.
-        let lasting = matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. });
-        if call.needs_approval() && (self.settings.dj_confirm_writes || lasting) {
+        if needs_asking(&call, self.settings.dj_confirm_writes, self.dj.unprompted()) {
             let summary = self.dj_summary(&call);
             self.dj.ask_approval(summary, call, reply);
         } else {
@@ -478,8 +478,9 @@ impl App {
         }
     }
 
-    /// A playlist the listener may edit, as its id and name.
-    fn dj_editable(&self, uri: &str) -> Result<(String, String), String> {
+    /// A playlist the listener may add to, as its id and name; with `owned_only`, one that is
+    /// theirs (taking songs out or renaming is not for a playlist others may edit).
+    fn dj_editable(&self, uri: &str, owned_only: bool) -> Result<(String, String), String> {
         let id = id_of(uri)?;
         let Some(playlist) = self.library_entry(&id) else {
             return Err(
@@ -487,7 +488,8 @@ impl App {
                     .into(),
             );
         };
-        if !self.can_edit_playlist(playlist) {
+        let owned = self.user_id().is_some_and(|user| playlist.owned_by(user));
+        if !(owned || !owned_only && self.can_edit_playlist(playlist)) {
             return Err(format!(
                 "\"{}\" is not the listener's own playlist, so it cannot be changed.",
                 render::clean(&playlist.name)
@@ -887,7 +889,7 @@ impl App {
                 reply_ok(format!("{said}."), Some(said))
             }
             Call::RemoveFromPlaylist { uri, uris } => {
-                let (id, name) = self.dj_editable(&uri)?;
+                let (id, name) = self.dj_editable(&uri, true)?;
                 let count = uris.len();
                 self.actions.push(Action::RemoveFromPlaylist {
                     playlist_id: id,
@@ -901,7 +903,7 @@ impl App {
                 name,
                 description,
             } => {
-                let (id, current) = self.dj_editable(&uri)?;
+                let (id, current) = self.dj_editable(&uri, true)?;
                 let current_description = self
                     .library_entry(&id)
                     .and_then(|playlist| playlist.description.as_deref())
@@ -990,7 +992,7 @@ impl App {
     /// the playlist is walked, as the add dialog does, and the add finishes in
     /// `dj_read_response`.
     pub(super) fn dj_add_to_playlist(&mut self, uri: &str, uris: &[String], reply: Reply) {
-        let (id, name) = match self.dj_editable(uri) {
+        let (id, name) = match self.dj_editable(uri, false) {
             Ok(found) => found,
             Err(error) => {
                 let _ = reply.send(Err(error));
@@ -1545,6 +1547,61 @@ impl App {
                     true,
                 );
             }
+        }
+    }
+}
+
+/// Whether a call waits for the listener's yes. The library gate ("Ask before changing my
+/// library") covers every write; the rest are asked about whatever it says: what lasts (a note, a
+/// schedule), what takes something away (there is no undo), and everything done in a turn nobody
+/// is watching, which text from a web page or a playlist name could have steered.
+fn needs_asking(call: &Call, confirm_writes: bool, unprompted: bool) -> bool {
+    let lasting = matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. });
+    call.needs_approval() && (confirm_writes || lasting || call.removes() || unprompted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn like() -> Call {
+        Call::LikeTracks {
+            uris: vec!["spotify:track:a".into()],
+        }
+    }
+
+    #[test]
+    fn writes_are_asked_about_by_the_gate_and_never_without_it_when_nobody_is_watching() {
+        // the gate on: every write asks
+        assert!(needs_asking(&like(), true, false));
+        // the gate off: an addition runs, in the listener's own conversation
+        assert!(!needs_asking(&like(), false, false));
+        // the gate off, the DJ's own turn: it still asks
+        assert!(needs_asking(&like(), false, true));
+        // reads never ask
+        assert!(!needs_asking(&Call::Skip, true, true));
+    }
+
+    #[test]
+    fn removals_renames_and_what_lasts_ask_even_with_the_gate_off() {
+        let uris = vec!["spotify:track:a".to_string()];
+        let uri = "spotify:playlist:p".to_string();
+        for call in [
+            Call::UnlikeTracks { uris: uris.clone() },
+            Call::RemoveFromPlaylist {
+                uri: uri.clone(),
+                uris,
+            },
+            Call::RenamePlaylist {
+                uri,
+                name: Some("New".into()),
+                description: None,
+            },
+            Call::Remember {
+                note: "no country".into(),
+            },
+        ] {
+            assert!(needs_asking(&call, false, false), "{call:?}");
         }
     }
 }

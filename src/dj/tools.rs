@@ -258,6 +258,17 @@ impl Call {
     /// Whether the call changes the listener's library or playlists, or leaves something that
     /// steers later conversations (a note, a scheduled task). With "Ask before changing my library" on, the app asks first
     /// (`crate::app::dj`).
+    /// Changes that take something away or rewrite it. There is no undo for them, so they are
+    /// asked about even with "Ask before changing my library" off.
+    pub fn removes(&self) -> bool {
+        matches!(
+            self,
+            Call::UnlikeTracks { .. }
+                | Call::RemoveFromPlaylist { .. }
+                | Call::RenamePlaylist { .. }
+        )
+    }
+
     pub fn needs_approval(&self) -> bool {
         matches!(
             self,

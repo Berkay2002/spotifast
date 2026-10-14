@@ -47,7 +47,8 @@ It has the same abilities you have by hand, and no others.
 | Keep things | `remember`, `forget`, `memory`, `schedule_task`, `list_schedules`, `cancel_schedule` |
 
 There is no tool that deletes a playlist, unfollows anything or touches
-your account. Playlists the DJ edits must be your own or collaborative.
+your account. The DJ adds songs to playlists that are yours or collaborative;
+it removes songs from and renames only your own.
 Spotify's own limits apply: no description removal, no queue clearing on
 another device, no tempo or key data.
 
@@ -61,8 +62,15 @@ alters your library waits for a yes or no on the DJ page: likes, new
 playlists, adding or removing songs, renaming. A new playlist shows its name,
 whether it is private and a few covers, with **Create** and **Cancel**; the
 other changes say what they would do with **Approve** and **Cancel**. An
-unanswered change is declined after four minutes. Notes and scheduled tasks always
-ask, even with that switch off, because they last beyond the chat.
+unanswered change is declined after four minutes.
+
+Some changes ask even with that switch off. There is no undo, so removing
+songs (from a playlist or from Liked Songs) and renaming always ask. Notes
+and scheduled tasks always ask, because they last beyond the chat. And every
+change the DJ wants to make in a turn of its own, on autopilot or from a
+schedule, asks: nobody was watching, and a web page or a playlist name could
+have steered it. Only adding songs, liking and creating playlists run without
+asking, and only in a conversation you started, with the switch off.
 
 Playing, queueing and the other playback controls run at once and are
 listed in the chat as they happen.
@@ -70,6 +78,12 @@ listed in the chat as they happen.
 ## What it keeps
 
 Everything stays on your computer, next to your settings:
+
+Each account has its own files, so another Spotify account on this computer
+does not inherit them: `dj-memory.<account>.json` and the others. Files from
+before that (`dj-memory.json`, `dj-schedules.json`, `dj-chats.json`) become
+the first account's the next time it opens the DJ. A file that cannot be read
+is kept beside it as `<name>.corrupt-<time>` instead of being overwritten.
 
 - `dj-memory.json`: up to 40 short notes ("no country on Sundays"). They go
   to the model at the start of a conversation. You can see and clear them

@@ -541,6 +541,10 @@ impl ClaudeProvider {
         if self.closed.load(Ordering::SeqCst) {
             return Err(Failure::new("Spotifast is closing."));
         }
+        // a shutdown or a stop that came while this waited for the lock: nothing is started
+        if self.cancel.load(Ordering::SeqCst) {
+            return Err(Failure::new("The listener stopped the DJ."));
+        }
         let mut st = self.state.lock().unwrap();
         if let Some(r) = &st.running
             && r.proc.is_alive()
@@ -560,6 +564,15 @@ impl ClaudeProvider {
         if let Some(why) = self.forced() {
             return Err(Failure::hinted(why, "env"));
         }
+        // folders an earlier run left when it was killed
+        static TIDIED: std::sync::Once = std::sync::Once::new();
+        TIDIED.call_once(|| {
+            private::remove_stale(
+                &std::env::temp_dir(),
+                Duration::from_secs(24 * 3600),
+                std::time::SystemTime::now(),
+            );
+        });
         // a new folder with a random name that only the owner can enter (see `private.rs`)
         let dir = private::private_dir_in(&std::env::temp_dir())
             .map_err(|e| Failure::new(format!("Could not prepare Claude: {e}")))?;
@@ -624,7 +637,11 @@ impl ClaudeProvider {
         sink(ChatEvent::Status {
             phase: "connecting",
         });
-        let proc = self.ensure_child(model.as_deref(), effort.as_deref(), req.web)?;
+        let proc = match self.ensure_child(model.as_deref(), effort.as_deref(), req.web) {
+            Ok(proc) => proc,
+            Err(_) if self.cancel.load(Ordering::SeqCst) => return Ok(ChatEvent::Cancelled),
+            Err(failure) => return Err(failure),
+        };
         if self.cancel.load(Ordering::SeqCst) {
             return Ok(ChatEvent::Cancelled);
         }
@@ -786,18 +803,28 @@ fn run_capture(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not start {}: {e}", l.program.display()))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
     let (tx, rx) = std::sync::mpsc::channel();
-    let program = l.program.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(
-            cmd.output()
-                .map_err(|e| format!("could not start {}: {e}", program.display())),
-        );
+        use std::io::Read;
+        let mut out = Vec::new();
+        let _ = (&mut stdout).take(1 << 20).read_to_end(&mut out);
+        let _ = tx.send(out);
     });
     match rx.recv_timeout(limit) {
-        Ok(Ok(o)) => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
-        Ok(Err(e)) => Err(e),
-        Err(_) => Err("Claude Code did not answer in time.".into()),
+        Ok(out) => {
+            let _ = child.wait();
+            Ok(String::from_utf8_lossy(&out).into_owned())
+        }
+        Err(_) => {
+            // a program that does not answer in time is stopped, not left running
+            let _ = child.kill();
+            let _ = child.wait();
+            Err("Claude Code did not answer in time.".into())
+        }
     }
 }
 

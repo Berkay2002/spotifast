@@ -42,6 +42,35 @@ pub fn private_dir_in(root: &Path) -> io::Result<PathBuf> {
     Err(taken.unwrap_or_else(|| io::Error::other("no free folder name")))
 }
 
+/// Removes the folders an earlier run left behind (it was killed before it could clean up): real
+/// directories named exactly like the ones `private_dir_in` makes, untouched for `age`. A folder
+/// a running child works in was made at its start, so `age` is far longer than a turn.
+// ponytail: the age is a day. A child that has run longer keeps its folder on Windows (a working
+// directory cannot be deleted) and may lose it on unix, where it has read its config long since.
+pub fn remove_stale(root: &Path, age: std::time::Duration, now: std::time::SystemTime) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let ours = name
+            .to_str()
+            .and_then(|n| n.strip_prefix("spotifast-claude-"))
+            .is_some_and(|hex| hex.len() == 32 && hex.chars().all(|c| c.is_ascii_hexdigit()));
+        let Ok(meta) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        let old = meta
+            .modified()
+            .ok()
+            .and_then(|at| now.duration_since(at).ok())
+            .is_some_and(|d| d >= age);
+        if ours && meta.is_dir() && old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Writes `bytes` to a file that must not exist yet (`create_new`: a planted file or link is an
 /// error, not something to write through). On unix only the owner can read it.
 pub fn write_new_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
@@ -83,6 +112,27 @@ mod tests {
             assert_eq!(hex.len(), 32, "{name}");
             assert!(hex.chars().all(|c| c.is_ascii_hexdigit()), "{name}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_old_folders_of_this_kind_are_removed() {
+        use std::time::{Duration, SystemTime};
+        let root = scratch("stale");
+        let mine = private_dir_in(&root).unwrap();
+        let other = root.join("spotifast-claude-planted");
+        std::fs::create_dir(&other).unwrap();
+        let file = root.join(format!("spotifast-claude-{}", "a".repeat(32)));
+        std::fs::write(&file, b"x").unwrap();
+        let day = Duration::from_secs(24 * 3600);
+        // nothing is old yet
+        remove_stale(&root, day, SystemTime::now());
+        assert!(mine.is_dir());
+        // two days on: the folder of this kind goes, the others stay
+        remove_stale(&root, day, SystemTime::now() + day * 2);
+        assert!(!mine.exists());
+        assert!(other.is_dir());
+        assert!(file.is_file());
         let _ = std::fs::remove_dir_all(&root);
     }
 
