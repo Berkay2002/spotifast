@@ -477,6 +477,9 @@ pub(crate) fn podcast_episodes(
 }
 
 fn podcasts(app: &mut App, ui: &mut egui::Ui) {
+    if !app.settings.library_sidebar.podcasts {
+        return;
+    }
     let palette = app.palette;
     let episodes = podcast_episodes(
         &app.home.podcasts,

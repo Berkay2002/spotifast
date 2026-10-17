@@ -699,11 +699,12 @@ fn playlist_rows(app: &App, sort: LibrarySort, needle: &str, entries: &mut Vec<E
         entries.push(liked);
     }
     let user_id = app.user_id().filter(|id| !id.is_empty());
-    if sort == LibrarySort::Spotify && needle.is_empty() && !app.settings.library_by_you {
+    let by_you = app.settings.by_you_active();
+    if sort == LibrarySort::Spotify && needle.is_empty() && !by_you {
         folder_rows(app, user_id.unwrap_or(""), entries);
     } else if let Some(playlists) = app.library.playlists.get() {
         for (index, playlist) in playlists.iter().enumerate() {
-            if app.settings.library_by_you && !user_id.is_some_and(|id| playlist.owned_by(id)) {
+            if by_you && !user_id.is_some_and(|id| playlist.owned_by(id)) {
                 continue;
             }
             if !needle.is_empty() && !playlist.name.to_lowercase().contains(needle) {
@@ -964,6 +965,10 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
     let mut filter = ui
         .data(|data| data.get_temp::<Filter>(filter_id))
         .unwrap_or_default();
+    let sections = app.settings.library_sidebar;
+    if !sections.offers(filter) {
+        filter = sections.shelves().next().unwrap_or_default();
+    }
     let show_search_id = egui::Id::new("sidebar-show-search");
     let mut show_search = ui
         .data(|data| data.get_temp::<bool>(show_search_id))
@@ -1066,33 +1071,42 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
             (Filter::Artists, gettext(locale, "Artists")),
             (Filter::Podcasts, gettext(locale, "Podcasts")),
         ] {
+            if !sections.offers(value) {
+                continue;
+            }
             if theme::soft_button(ui, &palette, None, &label, filter == value).clicked() {
                 filter = value;
             }
         }
     });
     let sort = selected_sort(app, filter);
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        sort_menu(app, ui, filter, sort);
-        if filter == Filter::Playlists {
-            // Translators: Library filter for playlists created by the signed-in user.
-            let label = gettext(locale, "By You");
-            let by_you = app.settings.library_by_you;
-            let response = theme::soft_button(ui, &palette, None, &label, by_you);
-            response.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::Button,
-                    ui.is_enabled(),
-                    by_you,
-                    &*label,
-                )
-            });
-            if response.clicked() {
-                app.actions.push(Action::SetLibraryByYou(!by_you));
+    let by_you_shown = filter == Filter::Playlists && sections.by_you;
+    // With nothing to put in it, the row takes no space at all.
+    if sections.sort || by_you_shown {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if sections.sort {
+                sort_menu(app, ui, filter, sort);
             }
-        }
-    });
+            if by_you_shown {
+                // Translators: Library filter for playlists created by the signed-in user.
+                let label = gettext(locale, "By You");
+                let by_you = app.settings.library_by_you;
+                let response = theme::soft_button(ui, &palette, None, &label, by_you);
+                response.widget_info(|| {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Button,
+                        ui.is_enabled(),
+                        by_you,
+                        &*label,
+                    )
+                });
+                if response.clicked() {
+                    app.actions.push(Action::SetLibraryByYou(!by_you));
+                }
+            }
+        });
+    }
     ui.data_mut(|data| {
         data.insert_temp(filter_id, filter);
         data.insert_temp(show_search_id, show_search);

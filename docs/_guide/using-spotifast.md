@@ -326,6 +326,21 @@ including Homebrew, Flatpak, apt, dnf, pacman, Nix, and Cargo. Other
 installations, the AppImage among them, use the [Download page](/download/).
 Portable archives identify themselves with `spotifast-portable.txt`.
 
+## Choose what the Library shows
+
+**Settings → Library sidebar** has a switch for each Library section
+(Playlists, Albums, Artists and Podcasts), for the order menu and for the By
+You button. A section that is off has no button in the Library, and a Library
+with no order menu or By You button gives that room to the list. Hiding the
+order menu keeps the order you chose, and hiding By You shows all your
+playlists again. Everything is on until you turn it off.
+
+Turning **Podcasts** off also stops Spotifast loading podcasts: it no longer
+asks Spotify for your saved shows and episodes or checks them for audiobooks,
+Home loses its podcast shelf, and search no longer asks for shows and
+episodes. Turning Albums or Artists off just stops loading them, since they
+are only read when you open them.
+
 ## Library order
 
 Select **By You** under Playlists to show only playlists owned by your signed-in

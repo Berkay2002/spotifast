@@ -1207,6 +1207,70 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         });
     }
 
+    let library_sidebar = gettext(locale, "Library sidebar");
+    let sidebar_playlists = gettext(locale, "Playlists");
+    let sidebar_albums = gettext(locale, "Albums");
+    let sidebar_artists = gettext(locale, "Artists");
+    let sidebar_podcasts = gettext(locale, "Podcasts");
+    let sidebar_sort = gettext(locale, "Show sort control");
+    let sidebar_by_you = gettext(locale, "Show By You filter");
+    let sidebar_rows = [
+        RowText::new(
+            sidebar_playlists.clone(),
+            gettext(locale, "Show Playlists in the Library."),
+        ),
+        RowText::new(
+            sidebar_albums.clone(),
+            gettext(locale, "Show Albums in the Library."),
+        ),
+        RowText::new(
+            sidebar_artists.clone(),
+            gettext(locale, "Show Artists in the Library."),
+        ),
+        RowText::new(
+            sidebar_podcasts.clone(),
+            gettext(
+                locale,
+                "Show Podcasts in the Library. Off, Spotifast also stops loading your saved podcasts and leaves podcasts out of Home and search.",
+            ),
+        ),
+        RowText::new(
+            sidebar_sort.clone(),
+            gettext(
+                locale,
+                "Show the sort menu in the Library. Hidden, the sort you chose stays in use.",
+            ),
+        ),
+        RowText::new(
+            sidebar_by_you.clone(),
+            gettext(
+                locale,
+                "Show the By You button in the Library. Hidden, all your playlists show.",
+            ),
+        ),
+    ];
+    if section_matches(&needle, &library_sidebar, &sidebar_rows) {
+        any_visible = true;
+        section(ui, &palette, &library_sidebar, |ui| {
+            let sidebar = &mut app.settings.library_sidebar;
+            let switches: [(&str, &mut bool); 6] = [
+                (&sidebar_playlists, &mut sidebar.playlists),
+                (&sidebar_albums, &mut sidebar.albums),
+                (&sidebar_artists, &mut sidebar.artists),
+                (&sidebar_podcasts, &mut sidebar.podcasts),
+                (&sidebar_sort, &mut sidebar.sort),
+                (&sidebar_by_you, &mut sidebar.by_you),
+            ];
+            for ((title, value), row) in switches.into_iter().zip(&sidebar_rows) {
+                filtered_row(ui, &palette, &needle, &library_sidebar, row, |ui| {
+                    if widgets::switch(ui, &palette, title, value).changed() {
+                        changed = true;
+                    }
+                });
+            }
+        });
+    }
+
     let proxy = gettext(locale, "Proxy");
     let proxy_rows = [RowText::new(
         gettext(locale, "Mode, host, port, username and password"),
