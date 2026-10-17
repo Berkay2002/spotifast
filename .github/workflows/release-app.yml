@@ -1,0 +1,203 @@
+name: Release
+
+# Berkay2002/spotifast is its own app, built from main. crmne/spotifast is
+# an update source: its releases are merged into main (the spotifast-sync
+# skill, run by a scheduled Claude routine), never followed tag by tag.
+#
+# Every push to main whose Cargo.toml version has no release yet builds,
+# signs and publishes that version. Bump the version to release; pushes
+# that leave it alone build nothing. Signed with the fork's own update key,
+# so the installed app's built-in updater follows these releases.
+#
+# Windows x64 only. The packaging steps are copied from crmne's
+# release.yml build and publish jobs; keep them in step when that changes.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  TARGET: x86_64-pc-windows-msvc
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.version.outputs.build }}
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Is this version released?
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a release version: $version"; exit 1; }
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "v$version is released already; bump Cargo.toml to release."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (windows x64)
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: windows-latest
+    env:
+      CMAKE_GENERATOR: Ninja
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
+        with:
+          toolchain: stable
+          targets: ${{ env.TARGET }}
+      # The repository pins its toolchain; add the target's standard library
+      # to the toolchain the pin actually resolves to.
+      - run: rustup target add ${{ env.TARGET }}
+      # libprojectM reads OpenGL through GLEW on Windows; projectm-sys builds
+      # against vcpkg's static-CRT triplet, matching .cargo/config.toml.
+      - name: GLEW for libprojectM
+        run: vcpkg install glew:x64-windows-static
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: x64
+      - run: cargo build --release --target ${{ env.TARGET }}
+
+      - name: Verify standalone Windows runtime
+        shell: pwsh
+        run: |
+          $binary = "target\$env:TARGET\release\spotifast.exe"
+          $imports = & dumpbin /dependents $binary | Out-String
+          $runtime = $imports | Select-String -Pattern 'MSVCP[0-9_]*\.dll|VCRUNTIME[0-9_]*\.dll'
+          if ($runtime) { throw "Spotifast imports an MSVC runtime:`n$runtime" }
+          $headers = & dumpbin /headers $binary | Out-String
+          if ($headers -notmatch '8664 machine \(x64\)') { throw "$binary is not built for $env:TARGET" }
+          $version = (& $binary --version | Out-String).Trim()
+          if (-not $version.StartsWith("spotifast $($env:TAG.TrimStart('v'))")) { throw "Unexpected --version output: $version" }
+
+      - name: Package
+        shell: bash
+        run: |
+          name="spotifast-${TAG}-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/${TARGET}/release/spotifast.exe" "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          cp packaging/spotifast-portable.txt "dist/$name/"
+          cd dist
+          7z a "$name.zip" "$name"
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          $version = $env:TAG.TrimStart("v")
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc "/DVersion=$version" "/DArch=x86_64" `
+            "/DBinary=$PWD\target\$env:TARGET\release\spotifast.exe" `
+            "/DOutputDir=$PWD\dist" packaging\windows\spotifast.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: '4.0'
+      - name: Windows Installer package
+        shell: pwsh
+        run: |
+          dotnet tool install wix --version 5.0.2 --tool-path "$env:RUNNER_TEMP\wix"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:PATH = "$env:RUNNER_TEMP\wix;$env:PATH"
+          gem install native-packages --version 0.9.0 --no-document
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $version = $env:TAG.TrimStart("v")
+          $payload = "dist\msi-input-$env:TARGET"
+          New-Item -ItemType Directory -Force $payload | Out-Null
+          $files = "target\$env:TARGET\release\spotifast.exe", "README.md", "LICENSE", "packaging\windows\spotifast-installer.txt"
+          Copy-Item $files $payload
+          $packages = "$env:RUNNER_TEMP\windows-packages"
+          native-packages build --version $version --target windows-amd64 --defer-recipes --output $packages
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item "$packages\packages\windows-amd64\msi\*.msi" dist\
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: ${{ env.TARGET }}
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
+            dist/*.msi
+          if-no-files-found: error
+
+  publish:
+    name: sign and publish
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          path: dist
+          merge-multiple: true
+      # The names the updater asks for (fastframe-update release.rs): a file
+      # missing here would silently stay out of checksums.txt.
+      - name: Expected downloads
+        run: |
+          for suffix in .zip -setup.exe .msi; do
+            test -f "dist/spotifast-${TAG}-${TARGET}${suffix}" || { echo "::error::Missing spotifast-${TAG}-${TARGET}${suffix}"; exit 1; }
+          done
+          python3 packaging/release-names.py dist "$TAG"
+      - uses: ruby/setup-ruby@651ff0d62c5c79bed6d53ec518387aae20e72c1a # v1
+        with:
+          ruby-version: '4.0'
+      # Sign the manifest release-names.py wrote (checksums.txt.sig), then
+      # check the signature and every listed file against the committed key.
+      - name: Sign checksums
+        env:
+          SPOTIFAST_UPDATE_SIGNING_KEY: ${{ secrets.SPOTIFAST_UPDATE_SIGNING_KEY }}
+        run: |
+          gem install native-packages --version 0.9.0 --no-document
+          native-packages sign-checksums dist/checksums.txt \
+            --public-key assets/update-public-key.hex \
+            --key-env SPOTIFAST_UPDATE_SIGNING_KEY
+          native-packages verify-checksums dist/checksums.txt \
+            --public-key assets/update-public-key.hex
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.version.outputs.sha }}
+        run: |
+          {
+            if [ -f "packaging/release-notes/$TAG.md" ]; then cat "packaging/release-notes/$TAG.md"; echo; fi
+            echo "Windows x64 only. Built from \`$SHA\`."
+          } > notes.md
+          # A version is released once; the next release needs a new
+          # version in Cargo.toml.
+          gh release create "$TAG" dist/* --target "$SHA" \
+            --title "Spotifast $TAG" --notes-file notes.md --latest

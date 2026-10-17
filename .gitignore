@@ -8,7 +8,8 @@ docs/_site/
 docs/.jekyll-cache/
 docs/vendor/
 docs/.bundle/
-.claude/
+.claude/*
+!.claude/skills/
 
 /.cache/
 

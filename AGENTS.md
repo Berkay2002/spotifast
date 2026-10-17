@@ -3,6 +3,29 @@
 Follow `CONTRIBUTING.md`; it is the canonical product and contribution policy.
 These instructions add implementation constraints for coding agents.
 
+## This repository: Berkay2002/spotifast
+
+This is Berkay's own app, started as a fork of crmne/spotifast. Where this
+section and the rest of this guide disagree, this section wins; the rest
+was written for crmne's project.
+
+- `main` is the app and the default branch. Features are built on
+  short-lived branches and merged into `main`; delete the branch after.
+- crmne's releases are merged into `main` as merge commits with the
+  `spotifast-sync` skill (`.claude/skills/`), run by a scheduled Claude
+  routine or by hand. The linear-history and no-merge-commit rules under
+  "Branches" do not apply to those merges.
+- The app numbers its own versions. A push to `main` with a `Cargo.toml`
+  version that has no release yet is released by
+  `.github/workflows/release-app.yml` (Windows x64, signed with the app's
+  update key). Bump the version to release. The steps under "Releases"
+  (Flatpak, website, Homebrew, AUR) are crmne's and do not apply.
+- Dependency forks may also live under `github.com/Berkay2002/`; librespot
+  comes from `Berkay2002/librespot` branch `spotifast`, which merges
+  crmne's librespot pin in the same way.
+- Nothing is sent upstream to crmne, and the issue and pull request
+  conventions below are crmne's.
+
 ## Product boundaries
 
 - Keep Spotifast a small native Spotify client. Do not add a browser engine,
