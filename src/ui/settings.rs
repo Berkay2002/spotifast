@@ -204,6 +204,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         palette.text,
     );
     ui.add_space(4.0);
+    if let Some(primed) = app.demo_settings_filter.take() {
+        ui.data_mut(|data| data.insert_temp(egui::Id::new(SETTINGS_FILTER_ID), primed));
+    }
     let mut filter = ui
         .data(|data| data.get_temp::<String>(egui::Id::new(SETTINGS_FILTER_ID)))
         .unwrap_or_default();
@@ -2015,6 +2018,13 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 app.actions
                     .push(Action::OpenUrl(widgets::AUTHOR_URL.to_owned()));
             }
+        });
+    }
+
+    if needle.is_empty() || "ai dj claude music".contains(needle.as_str()) {
+        any_visible = true;
+        section(ui, &palette, "AI DJ", |ui| {
+            changed |= super::dj::settings(app, ui);
         });
     }
 

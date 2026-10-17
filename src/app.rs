@@ -605,6 +605,13 @@ pub struct App {
     /// still names it: a newer search or anything the user started since
     /// takes precedence over a search that finishes late.
     play_search_serial: u64,
+    /// The AI DJ's chat and the tool calls it has sent us.
+    pub dj: crate::dj::Dj,
+    /// `--demo-show settings-dj`: text for the settings search field on the next frame.
+    pub demo_settings_filter: Option<String>,
+    dj_searches: HashMap<u64, dj::DjSearch>,
+    dj_search_serial: u64,
+    dj_state: dj::DjState,
     last_album_queue: Option<(String, Instant)>,
     /// The account's playlist tree from Spotify, folders and all; empty
     /// until the session answers.
@@ -845,7 +852,7 @@ impl App {
             .last_page
             .as_deref()
             .and_then(Page::decode)
-            .filter(|page| !matches!(page, Page::Settings | Page::Queue))
+            .filter(|page| !matches!(page, Page::Settings | Page::Queue | Page::Dj))
             .unwrap_or(Page::Home);
 
         let palette = settings.cached_palette().unwrap_or_else(Palette::dark);
@@ -1061,6 +1068,11 @@ impl App {
             pending_queue_batches: HashMap::new(),
             album_queue_serial: 0,
             play_search_serial: 0,
+            dj: crate::dj::Dj::new(waker.clone()),
+            demo_settings_filter: None,
+            dj_searches: HashMap::new(),
+            dj_search_serial: 0,
+            dj_state: dj::DjState::default(),
             last_album_queue: None,
             rootlist: Vec::new(),
             rootlist_cache: session.rootlist.clone(),
@@ -1088,6 +1100,7 @@ impl App {
             pixels_per_point: 1.0,
         };
         app.local.volume = app.settings.volume;
+        app.dj.attach(&app.dirs.config);
         // What was played here is on disk and needs nothing from the
         // network, so the tab has rows before Spotify has answered.
         app.rebuild_recents();
@@ -2476,7 +2489,7 @@ impl App {
                     self.refresh_queue(true);
                 }
             }
-            Page::Settings => {}
+            Page::Dj | Page::Settings => {}
         }
     }
 
@@ -4481,6 +4494,11 @@ impl App {
                     self.refresh_queue(true);
                 }
             }
+            Page::Dj => {
+                if self.dj.status.is_none() && !self.dj.checking() {
+                    self.dj.refresh_status();
+                }
+            }
             Page::Settings => {}
         }
     }
@@ -6450,6 +6468,9 @@ impl App {
                 }
                 self.request_user_names(adders);
             }
+            ApiResponse::PlaylistCreated(result) if self.dj_state.create.is_some() => {
+                self.dj_playlist_created(result);
+            }
             ApiResponse::PlaylistCreated(result) => {
                 self.playlist_busy = false;
                 match result {
@@ -6919,6 +6940,8 @@ impl App {
                     self.search.playlists_pending = split;
                 }
             }
+            ApiResponse::DjSearch { serial, result } => self.dj_search_response(serial, result),
+            ApiResponse::DjRead { serial, result } => self.dj_read_response(serial, result),
             ApiResponse::PlaySearch {
                 query,
                 serial,
@@ -10159,6 +10182,7 @@ impl App {
                 });
             }
             Action::SignOut => {
+                self.dj.shutdown();
                 self.backend.send(Command::SignOut);
                 self.history = vec![Page::Home];
                 self.history_index = 0;
@@ -10696,7 +10720,20 @@ impl App {
                     );
                 }
             }
+            Action::DjSend
+            | Action::DjStart
+            | Action::DjCancel
+            | Action::DjCheck
+            | Action::DjApprove(_)
+            | Action::DjDeny(_)
+            | Action::DjNewChat
+            | Action::DjRetry
+            | Action::DjOpenChat(_)
+            | Action::DjDeleteChat(_) => {
+                self.dj_action(&action);
+            }
             Action::Quit => {
+                self.dj.shutdown();
                 self.quit_requested = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -10948,6 +10985,7 @@ impl App {
             self.scrolling.stop();
         }
         self.handle_control_commands();
+        self.handle_dj();
         self.handle_events();
         self.open_pending_link();
         self.handle_media_commands();
@@ -11930,6 +11968,7 @@ fn cover_error(locale: Locale, error: &crate::api::client::ApiError) -> String {
     }
 }
 
+mod dj;
 mod radio;
 
 #[cfg(test)]
@@ -21658,6 +21697,130 @@ mod tests {
             })),
             ..Default::default()
         }
+    }
+
+    /// An app whose library has the editable playlist "Mine", with the songs "old" and "new"
+    /// already seen by the DJ.
+    fn dj_add_app(page: Option<PlaylistPage>) -> App {
+        let mut app = headless_app();
+        app.backend.set_offline(true);
+        app.library.playlists = Loadable::Loaded(vec![Playlist {
+            id: "mine".into(),
+            uri: "spotify:playlist:mine".into(),
+            name: "Mine".into(),
+            collaborative: true,
+            ..Default::default()
+        }]);
+        for id in ["old", "new"] {
+            app.track_cache.insert(
+                id.into(),
+                Track {
+                    uri: format!("spotify:track:{id}"),
+                    name: id.into(),
+                    ..Default::default()
+                },
+            );
+        }
+        if let Some(page) = page {
+            app.playlist_pages.insert("mine".into(), page);
+        }
+        app
+    }
+
+    fn holds_old() -> PlaylistPage {
+        PlaylistPage {
+            items: PagedList {
+                items: vec![cached_playlist_row("spotify:track:old")],
+                total: Some(1),
+                next_offset: None,
+                loaded_once: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_dj_leaves_out_songs_a_loaded_playlist_already_holds() {
+        let mut app = dj_add_app(Some(holds_old()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist(
+            "spotify:playlist:mine",
+            &[
+                "spotify:track:old".into(),
+                "spotify:track:new".into(),
+                "spotify:track:new".into(),
+            ],
+            tx,
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine, left out 1 it already had."
+        );
+        assert!(matches!(
+            app.actions.as_slice(),
+            [Action::ConfirmAddToPlaylist { items, .. }]
+                if items.len() == 1 && items[0].uri() == "spotify:track:new"
+        ));
+
+        // #when every song is already there
+        app.actions.clear();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist("spotify:playlist:mine", &["spotify:track:old".into()], tx);
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Nothing added: that song is already in Mine."
+        );
+        assert!(app.actions.is_empty());
+    }
+
+    #[test]
+    fn the_dj_walks_an_unloaded_playlist_before_adding() {
+        let mut app = dj_add_app(None);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist(
+            "spotify:playlist:mine",
+            &["spotify:track:old".into(), "spotify:track:new".into()],
+            tx,
+        );
+        assert!(rx.try_recv().is_err(), "the model is told after the check");
+        assert!(app.actions.is_empty());
+
+        // #when Spotify says the playlist already holds one of them
+        let serial = app.dj_search_serial;
+        app.dj_read_response(
+            serial,
+            Ok(crate::backend::DjData::Duplicates(vec![
+                "spotify:track:old".into(),
+            ])),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine, left out 1 it already had."
+        );
+        assert!(matches!(
+            app.actions.as_slice(),
+            [Action::ConfirmAddToPlaylist { items, .. }]
+                if items.len() == 1 && items[0].uri() == "spotify:track:new"
+        ));
+
+        // #when the check fails, the add still goes ahead
+        app.actions.clear();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.dj_add_to_playlist("spotify:playlist:mine", &["spotify:track:old".into()], tx);
+        let serial = app.dj_search_serial;
+        app.dj_read_response(
+            serial,
+            Err(crate::api::client::ApiError::Status {
+                status: 500,
+                message: "down".into(),
+            }),
+        );
+        assert_eq!(
+            rx.try_recv().unwrap().unwrap().text,
+            "Added 1 song to Mine."
+        );
+        assert_eq!(app.actions.len(), 1);
     }
 
     #[test]

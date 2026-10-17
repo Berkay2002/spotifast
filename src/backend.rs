@@ -104,6 +104,65 @@ pub enum RecentsFor {
     Panel,
 }
 
+/// A read the AI DJ asked for, answered with one [`DjData`].
+#[derive(Clone, Debug)]
+pub enum DjRead {
+    PlaylistTracks {
+        id: String,
+        offset: u32,
+        limit: u32,
+    },
+    AlbumTracks {
+        id: String,
+    },
+    ArtistTop {
+        id: String,
+    },
+    ArtistAlbums {
+        id: String,
+        limit: u32,
+    },
+    Liked {
+        offset: u32,
+        limit: u32,
+    },
+    Tracks {
+        ids: Vec<String>,
+    },
+    TopTracks {
+        range: &'static str,
+        limit: u32,
+    },
+    TopArtists {
+        range: &'static str,
+        limit: u32,
+    },
+    /// Which of `uris` a playlist already holds (the same walk the add dialog does).
+    PlaylistDuplicates {
+        id: String,
+        uris: Vec<String>,
+    },
+}
+
+/// What a [`DjRead`] found.
+#[derive(Debug)]
+pub enum DjData {
+    Playlist {
+        name: String,
+        owner: String,
+        total: u32,
+        items: Vec<PlaylistItem>,
+    },
+    Tracks {
+        tracks: Vec<Track>,
+        /// The size of the whole list, when the source reports it (Liked Songs).
+        total: Option<u32>,
+    },
+    Albums(Vec<crate::api::models::Album>),
+    Artists(Vec<crate::api::models::Artist>),
+    Duplicates(Vec<String>),
+}
+
 #[derive(Clone, Debug)]
 pub enum ApiRequest {
     Me,
@@ -246,6 +305,17 @@ pub enum ApiRequest {
     PlaySearch {
         kind: String,
         query: String,
+        serial: u64,
+    },
+    /// A search the AI DJ asked for: the results of each kind in `kinds`.
+    DjSearch {
+        kinds: Vec<String>,
+        query: String,
+        serial: u64,
+    },
+    /// A read the AI DJ asked for: a playlist's rows, an album, the library, the listener's tops.
+    DjRead {
+        read: DjRead,
         serial: u64,
     },
     Artist {
@@ -485,6 +555,14 @@ pub enum ApiResponse {
         query: String,
         serial: u64,
         result: ApiResult<Option<String>>,
+    },
+    DjSearch {
+        serial: u64,
+        result: ApiResult<SearchResults>,
+    },
+    DjRead {
+        serial: u64,
+        result: ApiResult<DjData>,
     },
     Artist {
         id: String,
@@ -4140,6 +4218,22 @@ fn operation_for(api: &ApiGateway, request: &ApiRequest) -> Operation {
         ApiRequest::Search { .. } => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { kind, .. } if kind == "playlist" => Operation::PlaylistSearch,
         ApiRequest::PlaySearch { .. } => Operation::CatalogSearch,
+        ApiRequest::DjSearch { kinds, .. } if kinds.iter().all(|kind| kind == "playlist") => {
+            Operation::PlaylistSearch
+        }
+        ApiRequest::DjSearch { .. } => Operation::CatalogSearch,
+        ApiRequest::DjRead { read, .. } => match read {
+            DjRead::PlaylistTracks { id, .. } | DjRead::PlaylistDuplicates { id, .. } => {
+                Operation::PlaylistItems(api.playlist_access(id))
+            }
+            DjRead::ArtistTop { .. } => Operation::ArtistTopTracks,
+            DjRead::Liked { .. } | DjRead::TopTracks { .. } | DjRead::TopArtists { .. } => {
+                Operation::UserData
+            }
+            DjRead::AlbumTracks { .. } | DjRead::ArtistAlbums { .. } | DjRead::Tracks { .. } => {
+                Operation::Catalog
+            }
+        },
         ApiRequest::Playlist { id, .. } => Operation::PlaylistMetadata(api.playlist_access(id)),
         ApiRequest::PlaylistItems { id, .. }
         | ApiRequest::PlaylistSample { id, .. }
@@ -4658,6 +4752,90 @@ async fn handle(
             query,
             serial,
         },
+        ApiRequest::DjSearch {
+            kinds,
+            query,
+            serial,
+        } => {
+            let kinds: Vec<&str> = kinds.iter().map(String::as_str).collect();
+            ApiResponse::DjSearch {
+                result: routed!(search(&query, &kinds)),
+                serial,
+            }
+        }
+        ApiRequest::DjRead { read, serial } => {
+            let result = match read {
+                DjRead::PlaylistTracks { id, offset, limit } => {
+                    // The header names and sizes it; a header that fails does not fail the rows.
+                    let header = routed!(playlist(&id)).ok();
+                    routed!(playlist_items(&id, offset, limit)).map(|page| DjData::Playlist {
+                        name: header.as_ref().map(|h| h.name.clone()).unwrap_or_default(),
+                        owner: header
+                            .as_ref()
+                            .and_then(|h| {
+                                h.owner.display_name.clone().or_else(|| h.owner.id.clone())
+                            })
+                            .unwrap_or_default(),
+                        total: page.total,
+                        items: page.items,
+                    })
+                }
+                DjRead::AlbumTracks { id } => {
+                    routed!(album_tracks(&id, 0, 50)).map(|page| DjData::Tracks {
+                        tracks: page.items,
+                        total: Some(page.total),
+                    })
+                }
+                DjRead::ArtistTop { id } => {
+                    routed!(artist_top_tracks(&id)).map(|tracks| DjData::Tracks {
+                        tracks,
+                        total: None,
+                    })
+                }
+                DjRead::ArtistAlbums { id, limit } => {
+                    routed!(artist_albums(&id, "album,single", 0, limit))
+                        .map(|page| DjData::Albums(page.items))
+                }
+                DjRead::Liked { offset, limit } => {
+                    routed!(saved_tracks(offset, limit)).map(|page| DjData::Tracks {
+                        total: Some(page.total),
+                        tracks: page.items.into_iter().map(|saved| saved.track).collect(),
+                    })
+                }
+                DjRead::Tracks { ids } => {
+                    let mut tracks = Vec::new();
+                    let mut failure = None;
+                    for id in &ids {
+                        match routed!(track(id)) {
+                            Ok(track) => tracks.push(track),
+                            Err(error) => {
+                                failure.get_or_insert(error);
+                            }
+                        }
+                    }
+                    match failure {
+                        Some(error) if tracks.is_empty() => Err(error),
+                        _ => Ok(DjData::Tracks {
+                            tracks,
+                            total: None,
+                        }),
+                    }
+                }
+                DjRead::TopTracks { range, limit } => {
+                    routed!(top_tracks(range, limit, 0)).map(|page| DjData::Tracks {
+                        tracks: page.items,
+                        total: None,
+                    })
+                }
+                DjRead::TopArtists { range, limit } => {
+                    routed!(top_artists(range, limit)).map(|page| DjData::Artists(page.items))
+                }
+                DjRead::PlaylistDuplicates { id, uris } => {
+                    routed!(playlist_duplicates(&id, &uris)).map(DjData::Duplicates)
+                }
+            };
+            ApiResponse::DjRead { serial, result }
+        }
         ApiRequest::SearchPlaylists { query, serial } => ApiResponse::SearchPlaylists {
             result: routed!(search(&query, &["playlist"]))
                 .map(|results| results.playlists.unwrap_or_default()),

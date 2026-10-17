@@ -6,6 +6,8 @@ pub mod artist;
 pub mod collection;
 pub(crate) mod devices;
 mod dialogs;
+pub mod dj;
+mod dj_crate;
 pub mod home;
 mod keys;
 pub mod library;
@@ -309,6 +311,7 @@ fn central(app: &mut App, ui: &mut egui::Ui) {
                                 Page::Show(id) => show::show(app, ui, &id),
                                 Page::Radio(seed) => radio::radio(app, ui, &seed),
                                 Page::Queue => queue::page(app, ui),
+                                Page::Dj => dj::show(app, ui),
                                 Page::Settings => settings::show(app, ui),
                             }
                         });

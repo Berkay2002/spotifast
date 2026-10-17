@@ -365,6 +365,12 @@ lyrics, with words or without, at the window's own size.
 titles, some mixed with English, numbers, and brackets.
 `collection-loading` keeps known collection metadata and placeholder artwork
 visible while replacing the page content, with unfinished controls disabled.
+With `--demo-page dj`, `dj-ready`, `dj-empty`, `dj-chat`, `dj-working`,
+`dj-swap`, `dj-playlist` and `dj-approval` show the DJ page with Claude Code
+installed: empty, a finished answer with its tray of queued songs, a turn still
+thinking, songs swapped in the queue, a playlist made, and a change waiting for
+approval. `dj-missing` shows the page when Claude Code is not installed, and
+`settings-dj` filters the settings to the DJ's.
 `--demo-language <TAG>` shows the interface in one of the bundled languages,
 such as `es` or `ja`, in place of the saved setting and the system's language.
 

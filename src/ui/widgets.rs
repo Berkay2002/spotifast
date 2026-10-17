@@ -280,6 +280,33 @@ fn paint_cover_url(
     true
 }
 
+/// The texture of `url`'s artwork made for a square of `size` points, once it is ready: for views
+/// that draw it themselves (a turning label, a sleeve in perspective).
+pub fn cover_texture(
+    ui: &Ui,
+    url: &str,
+    size: Vec2,
+    art: &crate::images::ArtLoader,
+) -> Option<egui::load::SizedTexture> {
+    art.touch(url);
+    let pixels = crate::images::cover_pixels(size.x.max(size.y) * ui.ctx().pixels_per_point());
+    let scaled = (url.starts_with("https://") || url.starts_with("http://"))
+        .then(|| crate::images::scaled_uri(url, pixels));
+    let uri = scaled.as_deref().unwrap_or(url);
+    let image = egui::Image::new(uri)
+        .texture_options(crate::images::COVER_TEXTURE)
+        .show_loading_spinner(false);
+    let Ok(egui::load::TexturePoll::Ready { texture }) = image.load_for_size(ui.ctx(), size) else {
+        return None;
+    };
+    let [width, height] = [texture.size.x, texture.size.y].map(|side| side.round() as usize);
+    if art.note_texture(url, uri, width, height) {
+        art.release_bytes(url);
+        crate::images::forget_decoded(ui.ctx(), uri);
+    }
+    Some(texture)
+}
+
 fn paint_cover_texture(
     ui: &Ui,
     texture: egui::load::SizedTexture,

@@ -124,6 +124,8 @@ pub enum Page {
     /// seed's URI.
     Radio(String),
     Queue,
+    /// The AI DJ: a chat that picks and plays music through Claude Code.
+    Dj,
     Settings,
 }
 
@@ -144,6 +146,7 @@ impl Page {
             Page::Show(id) => format!("show:{id}"),
             Page::Radio(seed) => format!("radio:{seed}"),
             Page::Queue => "queue".into(),
+            Page::Dj => "dj".into(),
             Page::Settings => "settings".into(),
         }
     }
@@ -159,6 +162,7 @@ impl Page {
             "podcasts" => Page::Podcasts,
             "episodes" => Page::Episodes,
             "queue" => Page::Queue,
+            "dj" => Page::Dj,
             "settings" => Page::Settings,
             other => {
                 let (kind, id) = other.split_once(':')?;
@@ -1300,6 +1304,21 @@ pub enum Action {
     /// Fetch one of projectM's preset packs into the folder, by its place
     /// in the list.
     DownloadMilkdropPack(usize),
+    /// Send the DJ page's message box as the listener's message.
+    DjSend,
+    /// Start a set: send the default prompt.
+    DjStart,
+    DjCancel,
+    /// Ask Claude Code again whether it is installed and signed in.
+    DjCheck,
+    /// Let the DJ make the change it asked for (by approval id) or turn it down.
+    DjApprove(u64),
+    DjDeny(u64),
+    DjNewChat,
+    /// Send the listener's last message again.
+    DjRetry,
+    DjOpenChat(u64),
+    DjDeleteChat(u64),
     Quit,
 }
 
