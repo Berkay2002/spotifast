@@ -1,13 +1,15 @@
 ---
 name: spotifast-sync
-description: Merge crmne/spotifast's latest release into this app (Berkay2002/spotifast, Berkay's own Spotifast) - bring the librespot fork up to crmne's pin, merge the release tag into main resolving every conflict so the app's own features win, bump the version, verify, and push so the Release workflow publishes it. Use this whenever the user, or a scheduled routine, wants the app updated from crmne, synced, or on crmne's new version, asks whether crmne has released something new, or asks why the app is behind - even if they only say "sync spotifast" or "update the app".
+description: Merge crmne/spotifast's latest work (the newest commit on crmne's main that passed crmne's CI, released or not) into this app (Berkay2002/spotifast, Berkay's own Spotifast) - bring the librespot fork up to crmne's pin, merge that commit into main resolving every conflict so the app's own features win, bump the version, verify, and push so the Release workflow publishes it. Use this whenever the user, or a scheduled routine, wants the app updated from crmne, synced, or on crmne's new version, asks whether crmne has released something new, or asks why the app is behind - even if they only say "sync spotifast" or "update the app".
 ---
 
 # Sync from crmne
 
 This repository is Berkay's own app, started as a fork of crmne/spotifast.
-`main` is the app. crmne's releases are an update source: each one is merged
-into `main` once, as a merge commit, so a conflict is resolved once and Git
+`main` is the app. crmne's `main` is an update source: the app follows its
+newest commit that passed crmne's CI, not only crmne's releases, so new work
+arrives as soon as it is green. Each sync is merged into `main` once, as a
+merge commit, so a conflict is resolved once and Git
 remembers it. Nothing is sent to crmne.
 
 After the merge is pushed, `.github/workflows/release-app.yml` builds, signs
@@ -19,9 +21,9 @@ the user present. Where the steps say "ask", see "When a decision is needed".
 ## Setup
 
 - crmne as a remote: `git remote add crmne https://github.com/crmne/spotifast.git`
-  if `git remote -v` lacks it. Fetch release tags into a private ref, never
-  into `refs/tags`, where crmne's and the app's version tags would clash:
-  `git fetch --no-tags crmne "refs/tags/$TAG:refs/crmne/tags/$TAG"`.
+  if `git remote -v` lacks it. Fetch with `--no-tags`, into private refs:
+  crmne's and the app's version tags would clash in `refs/tags`:
+  `git fetch --no-tags crmne "+refs/heads/main:refs/crmne/main" "+refs/tags/*:refs/crmne/tags/*"`.
 - The librespot fork, `Berkay2002/librespot` branch `spotifast`: a clone
   next to this repository (in a routine it is attached and already cloned;
   locally use `../_scratch/librespot` or clone it there). It needs a remote
@@ -36,22 +38,27 @@ the user present. Where the steps say "ask", see "When a decision is needed".
 
 ## Steps
 
-1. **Is there anything new?** `gh api repos/crmne/spotifast/releases/latest --jq .tag_name`
+1. **Is there anything new?** The target is the newest commit on crmne's
+   `main` whose CI passed, so a half-finished push is never merged:
+   `SHA=$(gh api "repos/crmne/spotifast/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].head_sha')`
    (REST works everywhere; `gh release` and `gh issue` use GraphQL, which a
-   cloud session can't reach). Fetch the tag as above. If
-   `git merge-base --is-ancestor refs/crmne/tags/$TAG main`, it is merged
-   already: report "up to date with crmne $TAG" and stop.
+   cloud session can't reach). Fetch as above and let `REF=${SHA:0:7}`. If
+   `git merge-base --is-ancestor $SHA main`, it is merged already: report
+   "up to date with crmne $REF" and stop. Note which crmne release tags the
+   merge brings in: `git tag -l` won't show them, so use
+   `git for-each-ref --format='%(refname:short)' --contains $(git merge-base main $SHA) refs/crmne/tags`
+   and keep those that are ancestors of `$SHA`.
 
 2. **librespot.** crmne pins every librespot crate to one commit:
-   `git show refs/crmne/tags/$TAG:Cargo.toml | grep 'github.com/crmne/librespot'`.
+   `git show $SHA:Cargo.toml | grep 'github.com/crmne/librespot'`.
    In the librespot clone, `git fetch crmne` and check
    `git merge-base --is-ancestor <crmne pin> origin/spotifast`. If it is not
    there yet, merge it into `spotifast` (`git merge --no-ff <crmne pin>`, not a
    rebase: `main`'s history already points at the current commits), resolve,
    `cargo check --workspace`, and push `spotifast`. Note the new tip SHA.
 
-3. **Merge the release into `main`.**
-   `git merge --no-ff -m "Merge crmne $TAG" refs/crmne/tags/$TAG`.
+3. **Merge crmne's commit into `main`.**
+   `git merge --no-ff -m "Merge crmne main at $REF" $SHA`.
    Resolve each conflict by kind:
    - **`Cargo.toml` version line**: keep the app's own version. The app
      numbers its own releases; crmne's number means nothing here.
@@ -82,18 +89,21 @@ the user present. Where the steps say "ask", see "When a decision is needed".
      now does the same thing differently), or a resolution changes what the
      user sees and no test or `demo` screenshot can confirm it.
 
-   Write the merge commit message as: `Merge crmne $TAG`, a blank line, then
+   Write the merge commit message as: `Merge crmne main at $REF`, a blank
+   line, the crmne release tags it brings in (if any), a blank line, then
    one line per non-mechanical resolution (what crmne changed, how the app's
    feature was kept).
 
-4. **Release it.** Bump `Cargo.toml`'s version: the patch number for a
-   crmne patch release, the minor number for a crmne minor release. Write
+4. **Release it.** Bump `Cargo.toml`'s version: the minor number when the
+   merge brings in a crmne minor release, otherwise the patch number. Write
    `packaging/release-notes/v<new version>.md`: one sentence that it brings in
-   crmne $TAG with a link to
-   `https://github.com/crmne/spotifast/releases/tag/$TAG`, then crmne's notes
-   for that tag (`packaging/release-notes/$TAG.md` from the merge) under a
-   `## From crmne $TAG` heading, then any app-side change worth a user's
-   notice. Commit "Release <new version>".
+   crmne's work up to `$REF`; for each crmne release tag it brings in, a
+   `## From crmne <tag>` section with crmne's notes
+   (`packaging/release-notes/<tag>.md`) and a link to
+   `https://github.com/crmne/spotifast/releases/tag/<tag>`; for crmne's
+   unreleased commits, a short `## Also from crmne` list of the user-facing
+   ones in plain words (skip CI, triage and website commits); then any
+   app-side change worth a user's notice. Commit "Release <new version>".
 
 5. **Verify.** Linux needs `libasound2-dev libpulse-dev libxkbcommon-dev
    libwayland-dev libgl1-mesa-dev cmake libclang-dev`. Then:
@@ -103,7 +113,7 @@ the user present. Where the steps say "ask", see "When a decision is needed".
    `python3 .github/scripts/check-dependency-sources.py`.
    A cold build takes well over ten minutes: run it in the background and
    wait for it. A failure caused by the merge is fixed in a follow-up commit
-   before pushing; a failure that also happens on crmne's tag alone is
+   before pushing; a failure that also happens on crmne's `$SHA` alone is
    crmne's, noted in the report and left alone.
 
 6. **Push** `main` (a normal push; it only adds commits). The push starts
@@ -113,7 +123,7 @@ the user present. Where the steps say "ask", see "When a decision is needed".
    failed job's log (`gh api repos/Berkay2002/spotifast/actions/runs/<id>/jobs`)
    and fix forward.
 
-7. **Report**: the new version and crmne tag, the release URL, each
+7. **Report**: the new version and crmne commit (and any release tags), the release URL, each
    non-mechanical resolution in one line, and anything left undone.
 
 ## When a decision is needed
@@ -122,9 +132,9 @@ With the user present, ask, then continue.
 
 Unattended, don't guess on what the user will see. Push the merge as it
 stands, with the questionable part resolved the way that keeps the app's
-current behaviour, to a branch `claude/sync-$TAG` instead of `main`, and open
+current behaviour, to a branch `claude/sync-$REF` instead of `main`, and open
 an issue through REST:
-`gh api repos/Berkay2002/spotifast/issues -f title="Sync crmne $TAG: decision needed" -f body="..."`
+`gh api repos/Berkay2002/spotifast/issues -f title="Sync crmne $REF: decision needed" -f body="..."`
 naming the branch, the choice, and what each option would look like. The
 next run sees the open issue (`gh api "repos/Berkay2002/spotifast/issues?state=open"`)
 and stops instead of redoing the work.
