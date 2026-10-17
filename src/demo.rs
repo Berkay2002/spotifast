@@ -8605,9 +8605,11 @@ mod tests {
 
         // Sweep from the top; the first slot inside the list is the one
         // right under Liked Songs, between what were the first two
-        // unpinned playlists.
+        // unpinned playlists. The DJ row and the library sections sit above
+        // it, and macOS's title bar pushes it further down, so the sweep
+        // reaches well past where crmne's sidebar ends.
         let mut dropped = false;
-        for step in 0..40 {
+        for step in 0..80 {
             let pos = egui::pos2(120.0, 100.0 + step as f32 * 10.0);
             egui::DragAndDrop::set_payload(
                 &ctx,
