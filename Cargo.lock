@@ -1489,7 +1489,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "dpi"
 version = "0.1.1"
-source = "git+https://github.com/crmne/winit?rev=ed7caa9023f10b397f5b6ec8284a840cbd8a6f65#ed7caa9023f10b397f5b6ec8284a840cbd8a6f65"
+source = "git+https://github.com/crmne/winit?rev=0bed9dc0a7db02590a279fb8bac795fa39ee6948#0bed9dc0a7db02590a279fb8bac795fa39ee6948"
 
 [[package]]
 name = "dpi"
@@ -1823,7 +1823,7 @@ dependencies = [
 [[package]]
 name = "fastframe-audio"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "cpal",
  "log",
@@ -1833,15 +1833,31 @@ dependencies = [
 [[package]]
 name = "fastframe-desktop"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
+ "log",
+ "mac-usernotifications",
+ "zbus",
+]
+
+[[package]]
+name = "fastframe-dock"
+version = "0.6.0"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
+dependencies = [
+ "log",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+ "windows 0.62.2",
  "zbus",
 ]
 
 [[package]]
 name = "fastframe-emoji"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "egui",
  "fastframe-fonts",
@@ -1859,7 +1875,7 @@ dependencies = [
 [[package]]
 name = "fastframe-file"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "log",
  "windows-sys 0.60.2",
@@ -1868,7 +1884,7 @@ dependencies = [
 [[package]]
 name = "fastframe-fonts"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "directories",
  "egui",
@@ -1881,7 +1897,7 @@ dependencies = [
 [[package]]
 name = "fastframe-i18n"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "include-po",
  "polib",
@@ -1892,7 +1908,7 @@ dependencies = [
 [[package]]
 name = "fastframe-icons"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "egui",
 ]
@@ -1900,7 +1916,7 @@ dependencies = [
 [[package]]
 name = "fastframe-instance"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "directories",
  "getrandom 0.4.3",
@@ -1910,7 +1926,7 @@ dependencies = [
 [[package]]
 name = "fastframe-log"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "env_logger",
  "jiff",
@@ -1920,7 +1936,7 @@ dependencies = [
 [[package]]
 name = "fastframe-now-playing"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "fastframe-desktop",
  "log",
@@ -1933,7 +1949,7 @@ dependencies = [
 [[package]]
 name = "fastframe-power"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "log",
  "objc2 0.6.4",
@@ -1945,7 +1961,7 @@ dependencies = [
 [[package]]
 name = "fastframe-scroll"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "egui",
 ]
@@ -1953,7 +1969,7 @@ dependencies = [
 [[package]]
 name = "fastframe-shell"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "eframe",
  "egui",
@@ -1969,7 +1985,7 @@ dependencies = [
 [[package]]
 name = "fastframe-text"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "egui",
  "zbus",
@@ -1978,7 +1994,7 @@ dependencies = [
 [[package]]
 name = "fastframe-theme"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "directories",
  "egui",
@@ -1991,7 +2007,7 @@ dependencies = [
 [[package]]
 name = "fastframe-titlebar"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "directories",
  "eframe",
@@ -2007,7 +2023,7 @@ dependencies = [
 [[package]]
 name = "fastframe-tray"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "ksni",
  "log",
@@ -2021,7 +2037,7 @@ dependencies = [
 [[package]]
 name = "fastframe-update"
 version = "0.6.0"
-source = "git+https://github.com/crmne/fastframe?tag=v0.6.0#0d65ca99eb6d00f10ff556bf985249658feed469"
+source = "git+https://github.com/crmne/fastframe?rev=3339a8bc524a51c47f87ca78c368dde3569d90f5#3339a8bc524a51c47f87ca78c368dde3569d90f5"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -3348,7 +3364,7 @@ dependencies = [
 [[package]]
 name = "librespot-audio"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "aes 0.8.4",
  "bytes",
@@ -3367,7 +3383,7 @@ dependencies = [
 [[package]]
 name = "librespot-connect"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "futures-util",
  "librespot-core",
@@ -3386,7 +3402,7 @@ dependencies = [
 [[package]]
 name = "librespot-core"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "aes 0.8.4",
  "base64",
@@ -3444,7 +3460,7 @@ dependencies = [
 [[package]]
 name = "librespot-metadata"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "async-trait",
  "bytes",
@@ -3461,7 +3477,7 @@ dependencies = [
 [[package]]
 name = "librespot-oauth"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "log",
  "oauth2",
@@ -3475,7 +3491,7 @@ dependencies = [
 [[package]]
 name = "librespot-playback"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "form_urlencoded",
  "futures-util",
@@ -3498,7 +3514,7 @@ dependencies = [
 [[package]]
 name = "librespot-protocol"
 version = "0.8.0"
-source = "git+https://github.com/Berkay2002/librespot?rev=b035d295777db615a6984022716acd8ee9a945f4#b035d295777db615a6984022716acd8ee9a945f4"
+source = "git+https://github.com/Berkay2002/librespot?rev=44c8444b6b6a39b8d2f1367be0aaeb7913f00c24#44c8444b6b6a39b8d2f1367be0aaeb7913f00c24"
 dependencies = [
  "protobuf",
  "protobuf-codegen",
@@ -3569,6 +3585,24 @@ name = "lz4_flex"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7ef0d4ed8669f8f8826eb00dc878084aa8f253506c4fd5e8f58f5bce72ddb97e"
+
+[[package]]
+name = "mac-usernotifications"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08adbb1b9e11709f9ce628dd7471208e5dd3ad35a245dbc81e59a36dce3f3780"
+dependencies = [
+ "block2 0.6.2",
+ "futures-channel",
+ "futures-lite",
+ "futures-timer",
+ "log",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-user-notifications 0.3.2",
+ "thiserror 2.0.20",
+]
 
 [[package]]
 name = "mach2"
@@ -4131,7 +4165,7 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-core-location",
+ "objc2-core-location 0.2.2",
  "objc2-foundation 0.2.2",
 ]
 
@@ -4229,6 +4263,16 @@ dependencies = [
  "objc2 0.5.2",
  "objc2-contacts",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-core-location"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca347214e24bc973fc025fd0d36ebb179ff30536ed1f80252706db19ee452009"
+dependencies = [
+ "objc2 0.6.4",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -4352,13 +4396,13 @@ dependencies = [
  "objc2-cloud-kit",
  "objc2-core-data",
  "objc2-core-image",
- "objc2-core-location",
+ "objc2-core-location 0.2.2",
  "objc2-foundation 0.2.2",
  "objc2-link-presentation",
  "objc2-quartz-core",
  "objc2-symbols",
  "objc2-uniform-type-identifiers",
- "objc2-user-notifications",
+ "objc2-user-notifications 0.2.2",
 ]
 
 [[package]]
@@ -4393,8 +4437,21 @@ dependencies = [
  "bitflags 2.13.1",
  "block2 0.5.1",
  "objc2 0.5.2",
- "objc2-core-location",
+ "objc2-core-location 0.2.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-user-notifications"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2 0.6.2",
+ "objc2 0.6.4",
+ "objc2-core-location 0.3.2",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -6002,6 +6059,7 @@ dependencies = [
  "egui",
  "egui_extras",
  "fastframe-audio",
+ "fastframe-dock",
  "fastframe-emoji",
  "fastframe-file",
  "fastframe-fonts",
@@ -7841,7 +7899,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 [[package]]
 name = "winit"
 version = "0.30.13"
-source = "git+https://github.com/crmne/winit?rev=ed7caa9023f10b397f5b6ec8284a840cbd8a6f65#ed7caa9023f10b397f5b6ec8284a840cbd8a6f65"
+source = "git+https://github.com/crmne/winit?rev=0bed9dc0a7db02590a279fb8bac795fa39ee6948#0bed9dc0a7db02590a279fb8bac795fa39ee6948"
 dependencies = [
  "ahash",
  "android-activity",
