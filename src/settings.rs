@@ -307,6 +307,13 @@ pub struct Settings {
     pub normalisation: bool,
     pub autoplay: bool,
     pub gapless: bool,
+    /// How one track runs into the next: not at all, a crossfade, or
+    /// Automix's beat-matched mix.
+    pub transitions: crate::transition::Mode,
+    /// The crossfade's length in seconds.
+    pub crossfade_secs: u32,
+    /// Play the transitions stored in Mix playlists.
+    pub mix_transitions: bool,
     /// librespot backend name; `None` picks the platform default.
     pub audio_backend: Option<String>,
     pub audio_device: Option<String>,
@@ -519,6 +526,9 @@ impl Default for Settings {
             normalisation: false,
             autoplay: true,
             gapless: true,
+            transitions: crate::transition::Mode::Off,
+            crossfade_secs: 6,
+            mix_transitions: true,
             audio_backend: None,
             audio_device: None,
             audio_buffer_ms: default_buffer_ms(),
@@ -1100,6 +1110,29 @@ mod tests {
         let encoded = serde_json::to_string(&enabled).unwrap();
         let decoded: Settings = serde_json::from_str(&encoded).unwrap();
         assert!(decoded.mac_notch_widget);
+    }
+
+    #[test]
+    fn transitions_default_to_off_with_mix_recipes_and_round_trip() {
+        let empty: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty.transitions, crate::transition::Mode::Off);
+        assert_eq!(empty.crossfade_secs, 6);
+        assert!(empty.mix_transitions);
+        let automix: Settings = serde_json::from_str(
+            r#"{"transitions": "automix", "crossfade_secs": 9, "mix_transitions": false}"#,
+        )
+        .unwrap();
+        assert_eq!(automix.transitions, crate::transition::Mode::Automix);
+        let decoded: Settings =
+            serde_json::from_str(&serde_json::to_string(&automix).unwrap()).unwrap();
+        assert_eq!(
+            (
+                decoded.transitions,
+                decoded.crossfade_secs,
+                decoded.mix_transitions
+            ),
+            (crate::transition::Mode::Automix, 9, false)
+        );
     }
 
     #[test]

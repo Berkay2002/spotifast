@@ -456,6 +456,16 @@ stream is named **Spotifast**, with **Spotify playback** as its description, so
 system mixers and audio processors can identify and route it. Explicit
 `PULSE_PROP_application.name` and `PULSE_PROP_stream.description` environment
 values take precedence.
+
+With **Transitions** set to Crossfade or Automix, the playback session asks
+for Spotify's analysis of the playing and next songs through extended
+metadata: the beat grid (kind 217), mixability (219 and 235), and tempo and
+key (61). Each song is asked for once and kept for the session; with
+Transitions off, nothing is requested. With **Use Mix transitions from
+playlists** on, starting a playlist also reads it once through the session's
+playlist request to find the transitions saved in its items. Neither request
+writes anything or needs more authorization.
+
 The same session checks releases that the Web API calls `single`, so confirmed
 EPs can carry their precise label. Spotifast deduplicates these checks while
 the app session is active. If the engine reconnects, an interrupted check may

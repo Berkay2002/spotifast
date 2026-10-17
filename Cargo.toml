@@ -331,10 +331,10 @@ hyper-proxy2 = { git = "https://github.com/crmne/hyper-proxy2", rev = "efca48113
 # to tell a slow link from a stalled one).
 # Every librespot crate comes from the fork so one copy exists. Drop each
 # patch once upstream merges it.
-librespot-audio = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-connect = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-core = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-metadata = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-oauth = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-playback = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
-librespot-protocol = { git = "https://github.com/Berkay2002/librespot", rev = "77e1eb9b4311ab107e7d056965181bda23324fe2" }
+librespot-audio = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-connect = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-core = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-metadata = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-oauth = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-playback = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }
+librespot-protocol = { git = "https://github.com/Berkay2002/librespot", rev = "88611b1a6dc0694bcdc20812f281ee438dc5459e" }

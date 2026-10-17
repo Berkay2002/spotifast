@@ -67,6 +67,8 @@ pub struct EngineConfig {
     pub prefetch_metered: Arc<std::sync::atomic::AtomicBool>,
     /// The prefetch budget; shared so an engine restart does not refill it.
     pub prefetch_bucket: crate::prefetch::SharedBucket,
+    /// Plans transitions between tracks; shared so settings apply live.
+    pub transitions: Arc<crate::transition::Planner>,
 }
 
 impl EngineConfig {
@@ -355,6 +357,7 @@ impl Engine {
             // the tap can undo it for the visualisers: they show the music,
             // not the loudness housekeeping.
             normalisation_report: Some(Arc::clone(&normalisation_factor)),
+            transitions: Some(Arc::clone(&config.transitions) as _),
             ..PlayerConfig::default()
         };
 
@@ -399,6 +402,11 @@ impl Engine {
             Arc::clone(&config.prefetch_metered),
             Arc::clone(&config.prefetch_bucket),
             config.audio_cache_limit.unwrap_or(0),
+        ));
+        tokio::spawn(crate::transition::run(
+            session.clone(),
+            player.get_player_event_channel(),
+            Arc::clone(&config.transitions),
         ));
 
         let connect_config = ConnectConfig {
@@ -1676,6 +1684,7 @@ mod tests {
             proxy: crate::settings::ProxyConfig::Off,
             prefetch_metered: Arc::default(),
             prefetch_bucket: Arc::default(),
+            transitions: crate::transition::Planner::new(Default::default()),
         };
         let id = config.device_id();
         assert_eq!(id.len(), 40);
