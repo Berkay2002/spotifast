@@ -118,9 +118,10 @@ the DJ to Spotify only.
 
 ## Known gaps
 
-The DJ's page, settings, approval cards and log lines are in the translation
-catalogues. What the model writes stays in the language it answers in, and the
-provider's own error messages (`src/dj/claude.rs`) are still English. Claude
+The DJ's page, settings, approval cards, log lines and the provider's fixed
+error messages are in the translation catalogues. What the model writes stays
+in the language it answers in, and text that comes from Claude Code itself
+(or from the system inside an error) is shown as it arrived. Claude
 Code is the only provider.
 
 The reasoning and the cards (covers, trays) are drawn from what happened

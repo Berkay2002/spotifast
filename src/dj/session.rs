@@ -679,7 +679,7 @@ impl Dj {
                     }
                 }
                 self.hint = hint;
-                self.push(LineKind::Error, message);
+                self.push(LineKind::Error, error_text(&message, self.locale));
             }
         }
     }
@@ -700,6 +700,99 @@ impl Drop for Dj {
     }
 }
 
+/// An error message from the provider in the listener's language. The provider's fixed messages
+/// (`claude::NOT_INSTALLED` and the others) are translated; text that comes from Claude Code
+/// itself, or from the system, is shown as it arrived.
+pub fn error_text(message: &str, locale: Locale) -> String {
+    use super::claude as c;
+    let fixed = match message {
+        c::NOT_INSTALLED => gettext(locale, "Claude Code is not installed."),
+        c::NOT_RUNNING => gettext(locale, "Claude Code is not running. Try again."),
+        c::STOPPED => gettext(
+            locale,
+            "Claude Code stopped unexpectedly. Try again to restart it.",
+        ),
+        c::NO_RESPONSE => gettext(locale, "Claude stopped responding."),
+        c::CLOSING => gettext(locale, "Spotifast is closing."),
+        c::LISTENER_STOPPED => gettext(locale, "The listener stopped the DJ."),
+        c::REQUEST_FAILED => gettext(locale, "The request failed."),
+        c::NOT_SIGNED_IN => gettext(
+            locale,
+            "You are not signed in to Claude. Run `claude login` in a terminal, then try again.",
+        ),
+        c::API_KEY => gettext(
+            locale,
+            "Claude Code is set to use an API key, not your Claude plan. Spotifast only uses your plan (`claude login`), so it stopped.",
+        ),
+        c::BAD_MODEL => gettext(
+            locale,
+            "That model name is not one Claude Code offers. Pick a model in Settings.",
+        ),
+        _ => {
+            // fixed words in front of text that arrived with the error
+            return if let Some(tail) = message.strip_prefix(c::STOPPED_WITH) {
+                // Translators: Keep {reason} exactly as written. It becomes the reason Claude Code gave.
+                gettext(locale, "Claude Code stopped: {reason}").replace("{reason}", tail)
+            } else if let Some(tail) = message.strip_prefix(c::LIMIT) {
+                // Translators: Keep {details} exactly as written. It becomes what Claude said about the
+                // limit, such as when it resets, and may be empty.
+                gettext(locale, "Your Claude usage limit is reached.{details}")
+                    .replace("{details}", tail)
+            } else if let Some(tail) = message.strip_prefix(c::PREPARE) {
+                // Translators: Keep {error} exactly as written. It becomes the system's error text.
+                gettext(locale, "Could not prepare Claude: {error}").replace("{error}", tail)
+            } else if let Some(tail) = message.strip_prefix(c::TOOL_SERVER) {
+                // Translators: Keep {error} exactly as written. It becomes the system's error text.
+                gettext(locale, "Could not start Spotifast's tool server: {error}")
+                    .replace("{error}", tail)
+            } else if let Some(names) = message
+                .strip_prefix("Your environment sets ")
+                .and_then(|rest| rest.split_once(", which would"))
+                .map(|(names, _)| names)
+            {
+                // Translators: Keep {names} exactly as written. It becomes the names of environment
+                // variables, such as ANTHROPIC_API_KEY.
+                gettext(
+                    locale,
+                    "Your environment sets {names}, which would make Claude Code use that instead of your Claude plan. Spotifast uses only the plan you sign in to with `claude login`, so it will not start Claude while that is set. Remove it (or start Spotifast without it) and try again.",
+                )
+                .replace("{names}", names)
+            } else {
+                message.to_string()
+            };
+        }
+    };
+    fixed.into_owned()
+}
+
+/// What to do about the last error, by its hint code (`login`, `install`, `env`, `limit`,
+/// `dead`); `None` for a code with nothing to add.
+pub fn hint_text(hint: &str, locale: Locale) -> Option<String> {
+    Some(
+        match hint {
+            "login" => gettext(
+                locale,
+                "Run `claude login` in a terminal, then send your message again.",
+            ),
+            "install" => gettext(
+                locale,
+                "Install Claude Code from claude.com/claude-code, then run `claude login` in a terminal.",
+            ),
+            "env" => gettext(
+                locale,
+                "Remove the API key from Spotifast's environment, then start it again.",
+            ),
+            "limit" => gettext(
+                locale,
+                "Wait for your Claude usage limit to reset, or pick a smaller model in Settings.",
+            ),
+            "dead" => gettext(locale, "Send your message again to restart Claude Code."),
+            _ => return None,
+        }
+        .into_owned(),
+    )
+}
+
 /// The page's explanation when the provider cannot be used, `None` when it can.
 pub fn blocker(st: &Status, locale: Locale) -> Option<String> {
     if !st.installed {
@@ -712,7 +805,7 @@ pub fn blocker(st: &Status, locale: Locale) -> Option<String> {
         );
     }
     if let Some(e) = &st.error {
-        return Some(e.clone());
+        return Some(error_text(e, locale));
     }
     if !st.logged_in {
         return Some(
@@ -1074,6 +1167,42 @@ mod tests {
                 .unwrap()
                 .contains("isn't installed")
         );
+    }
+
+    #[test]
+    fn provider_errors_are_translated_by_their_fixed_text() {
+        use super::super::claude as c;
+        let de = Locale::German;
+        for fixed in [
+            c::NOT_INSTALLED,
+            c::NOT_RUNNING,
+            c::STOPPED,
+            c::NO_RESPONSE,
+            c::CLOSING,
+            c::LISTENER_STOPPED,
+            c::REQUEST_FAILED,
+            c::NOT_SIGNED_IN,
+            c::API_KEY,
+            c::BAD_MODEL,
+        ] {
+            assert_ne!(error_text(fixed, de), fixed, "{fixed}");
+            assert_eq!(error_text(fixed, Locale::default()), fixed);
+        }
+        let limit = format!("{} Resets at 9pm.", c::LIMIT);
+        assert!(error_text(&limit, de).contains("Resets at 9pm."));
+        assert_ne!(error_text(&limit, de), limit);
+        let env = super::super::exe::refusal(&["ANTHROPIC_API_KEY".into()]);
+        assert!(error_text(&env, de).contains("ANTHROPIC_API_KEY"));
+        assert_ne!(error_text(&env, de), env);
+        // text from Claude Code itself is shown as it came
+        assert_eq!(error_text("boom", de), "boom");
+        for hint in ["login", "install", "env", "limit", "dead"] {
+            assert_ne!(
+                hint_text(hint, de).unwrap(),
+                hint_text(hint, Locale::default()).unwrap()
+            );
+        }
+        assert!(hint_text("other", de).is_none());
     }
 
     #[test]

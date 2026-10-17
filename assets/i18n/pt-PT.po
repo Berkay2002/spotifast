@@ -6,7 +6,7 @@ msgstr ""
 "Project-Id-Version: Spotifast\n"
 "Report-Msgid-Bugs-To: https://github.com/crmne/spotifast/issues/new?"
 "template=translation.yml\n"
-"POT-Creation-Date: 2026-10-17 16:45+0200\n"
+"POT-Creation-Date: 2026-10-17 16:58+0200\n"
 "PO-Revision-Date: 2026-09-23 20:00+0000\n"
 "Last-Translator: Spotifast contributors\n"
 "Language-Team: European Portuguese\n"
@@ -823,7 +823,7 @@ msgstr ""
 
 #. Translators: {name} is a playlist name.
 #. Translators: Keep {name} exactly as written. It becomes the name of a playlist.
-#: src/app.rs:6602 src/ui/dj.rs:1005
+#: src/app.rs:6602 src/ui/dj.rs:1012
 #, rust-format
 msgid "Created {name}"
 msgstr "{name} criada"
@@ -2408,7 +2408,7 @@ msgid "“{name}” will no longer appear in Your Library."
 msgstr "“{name}” deixará de aparecer na tua biblioteca."
 
 #: src/ui/dialogs.rs:104 src/ui/dialogs.rs:147 src/ui/dialogs.rs:425
-#: src/ui/dialogs.rs:606 src/ui/login.rs:89 src/ui/dj.rs:1070
+#: src/ui/dialogs.rs:606 src/ui/login.rs:89 src/ui/dj.rs:1077
 msgid "Cancel"
 msgstr "Cancelar"
 
@@ -3467,7 +3467,7 @@ msgstr ""
 msgid "Start DJ"
 msgstr "Iniciar DJ"
 
-#: src/ui/dj.rs:259 src/ui/dj.rs:261 src/ui/dj.rs:1137
+#: src/ui/dj.rs:259 src/ui/dj.rs:261 src/ui/dj.rs:1144
 msgid "New chat"
 msgstr "Nova conversa"
 
@@ -3487,7 +3487,7 @@ msgstr "Hoje às {time}"
 
 #. Translators: Keep {secs} and {count} exactly as written. They become the seconds
 #. the DJ worked and the number of steps it took.
-#: src/ui/dj.rs:451
+#: src/ui/dj.rs:458
 #, rust-format
 msgid "Worked for {secs}s · {count} step"
 msgid_plural "Worked for {secs}s · {count} steps"
@@ -3495,110 +3495,110 @@ msgstr[0] "Trabalhou durante {secs}s · {count} passo"
 msgstr[1] "Trabalhou durante {secs}s · {count} passos"
 
 #. Translators: Keep {count} exactly as written. It becomes the number of tools.
-#: src/ui/dj.rs:460
+#: src/ui/dj.rs:467
 #, rust-format
 msgid "Used {count} tool"
 msgid_plural "Used {count} tools"
 msgstr[0] "Usou {count} ferramenta"
 msgstr[1] "Usou {count} ferramentas"
 
-#: src/ui/dj.rs:480
+#: src/ui/dj.rs:487
 msgid "Connecting"
 msgstr "A ligar"
 
-#: src/ui/dj.rs:481 src/ui/dj.rs:617
+#: src/ui/dj.rs:488 src/ui/dj.rs:624
 msgid "Thinking"
 msgstr "A pensar"
 
-#: src/ui/dj.rs:482
+#: src/ui/dj.rs:489
 msgid "Working"
 msgstr "A trabalhar"
 
 #. Translators: Keep {songs} exactly as written. It becomes a number of songs,
 #. such as "48 songs".
-#: src/ui/dj.rs:520 src/app/dj.rs:765
+#: src/ui/dj.rs:527 src/app/dj.rs:765
 #, rust-format
 msgid "Queued {songs}"
 msgstr "Adicionou {songs} à fila"
 
 #. Translators: Keep {songs} exactly as written. It becomes a number of songs.
-#: src/ui/dj.rs:527 src/app/dj.rs:951
+#: src/ui/dj.rs:534 src/app/dj.rs:951
 #, rust-format
 msgid "Took {songs} out of the queue"
 msgstr "Retirou {songs} da fila"
 
-#: src/ui/dj.rs:571
+#: src/ui/dj.rs:578
 msgid "Copy the answer"
 msgstr "Copiar a resposta"
 
-#: src/ui/dj.rs:585
+#: src/ui/dj.rs:592
 msgid "Ask again"
 msgstr "Perguntar novamente"
 
 #. Translators: Keep {secs} exactly as written. It becomes the seconds the DJ thought.
-#: src/ui/dj.rs:628
+#: src/ui/dj.rs:635
 #, rust-format
 msgid "Thought for {secs}s"
 msgstr "Pensou durante {secs}s"
 
 #. Translators: Keep {count} exactly as written. It becomes the number of songs
 #. a list does not show.
-#: src/ui/dj.rs:884
+#: src/ui/dj.rs:891
 #, rust-format
 msgid "+{count} more"
 msgstr "+{count} mais"
 
 #. Translators: Label of the songs the DJ took out of the queue.
-#: src/ui/dj.rs:923
+#: src/ui/dj.rs:930
 msgctxt "queue swap"
 msgid "Out"
 msgstr "Saem"
 
 #. Translators: Label of the songs the DJ put into the queue.
-#: src/ui/dj.rs:925
+#: src/ui/dj.rs:932
 msgctxt "queue swap"
 msgid "In"
 msgstr "Entram"
 
 #. Translators: Keep {songs} and {name} exactly as written. They become a number of songs
 #. and the name of a playlist.
-#: src/ui/dj.rs:1009 src/app/dj.rs:1202
+#: src/ui/dj.rs:1016 src/app/dj.rs:1202
 #, rust-format
 msgid "Added {songs} to {name}"
 msgstr "Adicionou {songs} a {name}"
 
-#: src/ui/dj.rs:1013
+#: src/ui/dj.rs:1020
 msgid "Open"
 msgstr "Abrir"
 
-#: src/ui/dj.rs:1138
+#: src/ui/dj.rs:1145
 msgid "Tell the DJ what you want"
 msgstr "Diz ao DJ o que queres"
 
-#: src/ui/dj.rs:1214
+#: src/ui/dj.rs:1221
 msgid "Model"
 msgstr "Modelo"
 
 #. Translators: Keep {effort} exactly as written. It becomes how hard the model thinks
 #. (low, medium, high).
-#: src/ui/dj.rs:1256
+#: src/ui/dj.rs:1263
 #, rust-format
 msgid "Thinking effort: {effort}"
 msgstr "Esforço de raciocínio: {effort}"
 
-#: src/ui/dj.rs:1291
+#: src/ui/dj.rs:1298
 msgid "Stop"
 msgstr "Parar"
 
-#: src/ui/dj.rs:1293
+#: src/ui/dj.rs:1300
 msgid "Send"
 msgstr "Enviar"
 
-#: src/ui/dj.rs:1332
+#: src/ui/dj.rs:1339
 msgid "AI DJ"
 msgstr "DJ com IA"
 
-#: src/ui/dj.rs:1339
+#: src/ui/dj.rs:1346
 msgid ""
 "Show the DJ in the sidebar. It runs the Claude Code CLI you are signed in "
 "to; Spotifast never sees your Claude login."
@@ -3606,11 +3606,11 @@ msgstr ""
 "Mostrar o DJ na barra lateral. Usa a CLI do Claude Code com a qual iniciaste "
 "sessão; o Spotifast nunca vê o teu início de sessão do Claude."
 
-#: src/ui/dj.rs:1347
+#: src/ui/dj.rs:1354
 msgid "Ask before changing my library"
 msgstr "Perguntar antes de alterar a minha biblioteca"
 
-#: src/ui/dj.rs:1354
+#: src/ui/dj.rs:1361
 msgid ""
 "The DJ asks you to approve each like or playlist change before it happens. "
 "Removing songs, renaming and anything the DJ does on its own always ask, and "
@@ -3620,11 +3620,11 @@ msgstr ""
 "acontecer. Remover músicas, mudar nomes e tudo o que o DJ faz sozinho pedem "
 "sempre confirmação, tal como as notas e as tarefas agendadas."
 
-#: src/ui/dj.rs:1363
+#: src/ui/dj.rs:1370
 msgid "Let the DJ search the web"
 msgstr "Deixar o DJ pesquisar na web"
 
-#: src/ui/dj.rs:1370
+#: src/ui/dj.rs:1377
 msgid ""
 "Lets the DJ use Claude Code's own web search to look up music facts. The "
 "search words it chooses go to Claude's search; it cannot open pages."
@@ -3633,11 +3633,11 @@ msgstr ""
 "informações sobre música. As palavras de pesquisa que escolhe vão para a "
 "pesquisa do Claude; não consegue abrir páginas."
 
-#: src/ui/dj.rs:1378
+#: src/ui/dj.rs:1385
 msgid "Autopilot"
 msgstr "Piloto automático"
 
-#: src/ui/dj.rs:1385
+#: src/ui/dj.rs:1392
 msgid ""
 "While Spotifast is open, the DJ tops up the queue when it runs low and "
 "reacts to skips. It uses your Claude plan."
@@ -3645,15 +3645,15 @@ msgstr ""
 "Enquanto o Spotifast estiver aberto, o DJ reabastece a fila quando está a "
 "acabar e reage às músicas que saltas. Usa o teu plano do Claude."
 
-#: src/ui/dj.rs:1393
+#: src/ui/dj.rs:1400
 msgid "Same as the DJ model"
 msgstr "Igual ao modelo do DJ"
 
-#: src/ui/dj.rs:1397
+#: src/ui/dj.rs:1404
 msgid "Background model"
 msgstr "Modelo em segundo plano"
 
-#: src/ui/dj.rs:1400
+#: src/ui/dj.rs:1407
 msgid ""
 "The model for the DJ's own turns (autopilot, scheduled tasks). A smaller one "
 "costs less of your plan."
@@ -3661,19 +3661,19 @@ msgstr ""
 "O modelo para as ações do próprio DJ (piloto automático, tarefas agendadas). "
 "Um modelo mais pequeno gasta menos do teu plano."
 
-#: src/ui/dj.rs:1440
+#: src/ui/dj.rs:1447
 msgid "DJ model"
 msgstr "Modelo do DJ"
 
-#: src/ui/dj.rs:1441
+#: src/ui/dj.rs:1448
 msgid "Which Claude model the DJ asks for."
 msgstr "Que modelo do Claude o DJ pede."
 
-#: src/ui/dj.rs:1468
+#: src/ui/dj.rs:1475
 msgid "DJ effort"
 msgstr "Esforço do DJ"
 
-#: src/ui/dj.rs:1471
+#: src/ui/dj.rs:1478
 msgid ""
 "How hard the model thinks before it answers. Lower is faster and uses less "
 "of your plan."
@@ -3983,6 +3983,109 @@ msgid "Stopped."
 msgstr "Parado."
 
 #: src/dj/session.rs:709
+msgid "Claude Code is not installed."
+msgstr "O Claude Code não está instalado."
+
+#: src/dj/session.rs:710
+msgid "Claude Code is not running. Try again."
+msgstr "O Claude Code não está em execução. Tenta novamente."
+
+#: src/dj/session.rs:713
+msgid "Claude Code stopped unexpectedly. Try again to restart it."
+msgstr "O Claude Code parou inesperadamente. Tenta novamente para o reiniciar."
+
+#: src/dj/session.rs:715
+msgid "Claude stopped responding."
+msgstr "O Claude deixou de responder."
+
+#: src/dj/session.rs:716
+msgid "Spotifast is closing."
+msgstr "O Spotifast está a fechar."
+
+#: src/dj/session.rs:717
+msgid "The listener stopped the DJ."
+msgstr "O ouvinte parou o DJ."
+
+#: src/dj/session.rs:718
+msgid "The request failed."
+msgstr "O pedido falhou."
+
+#: src/dj/session.rs:721
+msgid ""
+"You are not signed in to Claude. Run `claude login` in a terminal, then try "
+"again."
+msgstr "Não tens sessão iniciada no Claude. Executa `claude login` num terminal e tenta novamente."
+
+#: src/dj/session.rs:725
+msgid ""
+"Claude Code is set to use an API key, not your Claude plan. Spotifast only "
+"uses your plan (`claude login`), so it stopped."
+msgstr "O Claude Code está configurado para usar uma chave de API, não o teu plano do Claude. O Spotifast só usa o teu plano (`claude login`), por isso parou."
+
+#: src/dj/session.rs:729
+msgid ""
+"That model name is not one Claude Code offers. Pick a model in Settings."
+msgstr "Esse nome de modelo não é oferecido pelo Claude Code. Escolhe um modelo em Definições."
+
+#. Translators: Keep {reason} exactly as written. It becomes the reason Claude Code gave.
+#: src/dj/session.rs:735
+#, rust-format
+msgid "Claude Code stopped: {reason}"
+msgstr "O Claude Code parou: {reason}"
+
+#. Translators: Keep {details} exactly as written. It becomes what Claude said about the
+#. limit, such as when it resets, and may be empty.
+#: src/dj/session.rs:739
+#, rust-format
+msgid "Your Claude usage limit is reached.{details}"
+msgstr "Atingiste o limite de utilização do Claude.{details}"
+
+#. Translators: Keep {error} exactly as written. It becomes the system's error text.
+#: src/dj/session.rs:743
+#, rust-format
+msgid "Could not prepare Claude: {error}"
+msgstr "Não foi possível preparar o Claude: {error}"
+
+#. Translators: Keep {error} exactly as written. It becomes the system's error text.
+#: src/dj/session.rs:746
+#, rust-format
+msgid "Could not start Spotifast's tool server: {error}"
+msgstr "Não foi possível iniciar o servidor de ferramentas do Spotifast: {error}"
+
+#: src/dj/session.rs:757
+#, rust-format
+msgid ""
+"Your environment sets {names}, which would make Claude Code use that instead "
+"of your Claude plan. Spotifast uses only the plan you sign in to with "
+"`claude login`, so it will not start Claude while that is set. Remove it (or "
+"start Spotifast without it) and try again."
+msgstr "O teu ambiente define {names}, o que faria o Claude Code usar isso em vez do teu plano do Claude. O Spotifast só usa o plano com que inicias sessão através de `claude login`, por isso não vai iniciar o Claude enquanto isso estiver definido. Remove essa definição (ou inicia o Spotifast sem ela) e tenta novamente."
+
+#: src/dj/session.rs:775
+msgid "Run `claude login` in a terminal, then send your message again."
+msgstr "Executa `claude login` num terminal e envia a tua mensagem novamente."
+
+#: src/dj/session.rs:779
+msgid ""
+"Install Claude Code from claude.com/claude-code, then run `claude login` in "
+"a terminal."
+msgstr "Instala o Claude Code a partir de claude.com/claude-code e executa `claude login` num terminal."
+
+#: src/dj/session.rs:783
+msgid "Remove the API key from Spotifast's environment, then start it again."
+msgstr "Remove a chave de API do ambiente do Spotifast e inicia-o novamente."
+
+#: src/dj/session.rs:787
+msgid ""
+"Wait for your Claude usage limit to reset, or pick a smaller model in "
+"Settings."
+msgstr "Espera que o limite de utilização do Claude seja reposto ou escolhe um modelo mais pequeno em Definições."
+
+#: src/dj/session.rs:789
+msgid "Send your message again to restart Claude Code."
+msgstr "Envia a tua mensagem novamente para reiniciar o Claude Code."
+
+#: src/dj/session.rs:802
 msgid ""
 "Claude Code isn't installed. The DJ uses your Claude subscription through "
 "the Claude Code CLI. Install it from claude.com/claude-code, then run "
@@ -3992,7 +4095,7 @@ msgstr ""
 "através da CLI do Claude Code. Instala-a a partir de claude.com/claude-code "
 "e depois executa `claude login` num terminal."
 
-#: src/dj/session.rs:721
+#: src/dj/session.rs:814
 msgid ""
 "Sign in to Claude Code. Run `claude login` in a terminal and sign in with "
 "your Claude account. Spotifast never sees your login."

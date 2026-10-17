@@ -25,6 +25,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// No event from the child for this long (while no tool call is in flight) and it is considered hung.
+// The fixed messages the UI shows; `session::error_text` translates them by these exact texts.
+pub(super) const NOT_INSTALLED: &str = "Claude Code is not installed.";
+pub(super) const NOT_RUNNING: &str = "Claude Code is not running. Try again.";
+pub(super) const STOPPED: &str = "Claude Code stopped unexpectedly. Try again to restart it.";
+pub(super) const NO_RESPONSE: &str = "Claude stopped responding.";
+pub(super) const CLOSING: &str = "Spotifast is closing.";
+pub(super) const LISTENER_STOPPED: &str = "The listener stopped the DJ.";
+pub(super) const REQUEST_FAILED: &str = "The request failed.";
+pub(super) const NOT_SIGNED_IN: &str =
+    "You are not signed in to Claude. Run `claude login` in a terminal, then try again.";
+pub(super) const API_KEY: &str = "Claude Code is set to use an API key, not your Claude plan. Spotifast only uses your plan (`claude login`), so it stopped.";
+pub(super) const LIMIT: &str = "Your Claude usage limit is reached.";
+pub(super) const BAD_MODEL: &str =
+    "That model name is not one Claude Code offers. Pick a model in Settings.";
+pub(super) const STOPPED_WITH: &str = "Claude Code stopped: ";
+pub(super) const PREPARE: &str = "Could not prepare Claude: ";
+pub(super) const TOOL_SERVER: &str = "Could not start Spotifast's tool server: ";
+
 const IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 /// An interrupt the child has not answered by now is a kill.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(5);
@@ -55,7 +73,7 @@ pub fn accepted_model(m: &str) -> Result<Option<String>, String> {
     if plain {
         Ok(Some(m.to_string()))
     } else {
-        Err("That model name is not one Claude Code offers. Pick a model in Settings.".into())
+        Err(BAD_MODEL.into())
     }
 }
 
@@ -209,10 +227,8 @@ impl Mapper {
                         && src != "oauth"
                     {
                         out.push(Step::Finished(Outcome::Failed(Failure::hinted(
-                                "Claude Code is set to use an API key, not your Claude plan. Spotifast only uses \
-                                 your plan (`claude login`), so it stopped.",
-                                "env",
-                            ))));
+                            API_KEY, "env",
+                        ))));
                     }
                 }
             }
@@ -304,10 +320,7 @@ fn finish(r: &Value, assistant_error: Option<&str>, limited: bool, cancelled: bo
             || lower.contains("not logged in")
             || lower.contains("/login")
         {
-            return Outcome::Failed(Failure::hinted(
-                "You are not signed in to Claude. Run `claude login` in a terminal, then try again.",
-                "login",
-            ));
+            return Outcome::Failed(Failure::hinted(NOT_SIGNED_IN, "login"));
         }
         if limited
             || matches!(assistant_error, Some("rate_limit"))
@@ -320,13 +333,10 @@ fn finish(r: &Value, assistant_error: Option<&str>, limited: bool, cancelled: bo
             } else {
                 format!(" {}", result.trim())
             };
-            return Outcome::Failed(Failure::hinted(
-                format!("Your Claude usage limit is reached.{tail}"),
-                "limit",
-            ));
+            return Outcome::Failed(Failure::hinted(format!("{LIMIT}{tail}"), "limit"));
         }
         let message = if result.trim().is_empty() {
-            "The request failed.".to_string()
+            REQUEST_FAILED.to_string()
         } else {
             result.trim().to_string()
         };
@@ -462,7 +472,7 @@ impl ClaudeProvider {
     fn status_impl(&self) -> Status {
         let mut st = Status::default();
         let Some(l) = self.launch() else {
-            st.error = Some("Claude Code is not installed.".into());
+            st.error = Some(NOT_INSTALLED.into());
             return st;
         };
         st.installed = true;
@@ -539,11 +549,11 @@ impl ClaudeProvider {
     ) -> Result<Arc<Proc>, Failure> {
         let _start = self.start.lock().unwrap();
         if self.closed.load(Ordering::SeqCst) {
-            return Err(Failure::new("Spotifast is closing."));
+            return Err(Failure::new(CLOSING));
         }
         // a shutdown or a stop that came while this waited for the lock: nothing is started
         if self.cancel.load(Ordering::SeqCst) {
-            return Err(Failure::new("The listener stopped the DJ."));
+            return Err(Failure::new(LISTENER_STOPPED));
         }
         let mut st = self.state.lock().unwrap();
         if let Some(r) = &st.running
@@ -559,7 +569,7 @@ impl ClaudeProvider {
         }
         *self.rx.lock().unwrap() = None;
         let Some(l) = self.launch() else {
-            return Err(Failure::hinted("Claude Code is not installed.", "install"));
+            return Err(Failure::hinted(NOT_INSTALLED, "install"));
         };
         if let Some(why) = self.forced() {
             return Err(Failure::hinted(why, "env"));
@@ -575,10 +585,10 @@ impl ClaudeProvider {
         });
         // a new folder with a random name that only the owner can enter (see `private.rs`)
         let dir = private::private_dir_in(&std::env::temp_dir())
-            .map_err(|e| Failure::new(format!("Could not prepare Claude: {e}")))?;
+            .map_err(|e| Failure::new(format!("{PREPARE}{e}")))?;
         let mcp = McpServer::start(self.tools.clone(), self.handler()).map_err(|e| {
             let _ = std::fs::remove_dir_all(&dir);
-            Failure::new(format!("Could not start Spotifast's tool server: {e}"))
+            Failure::new(format!("{TOOL_SERVER}{e}"))
         })?;
         // the token goes to the child through this file, never through a command line
         let cfg = dir.join("mcp.json");
@@ -588,7 +598,7 @@ impl ClaudeProvider {
         {
             mcp.stop();
             let _ = std::fs::remove_dir_all(&dir);
-            return Err(Failure::new(format!("Could not prepare Claude: {e}")));
+            return Err(Failure::new(format!("{PREPARE}{e}")));
         }
         let mut args = l.args.clone();
         args.extend(build_args(
@@ -651,15 +661,13 @@ impl ClaudeProvider {
             .lock()
             .unwrap()
             .take()
-            .ok_or_else(|| Failure::new("Claude Code is not running. Try again."))?;
+            .ok_or_else(|| Failure::new(NOT_RUNNING))?;
         // anything left from an earlier turn is not part of this one
         while let Ok(m) = rx.try_recv() {
             if m.get("type").and_then(Value::as_str) == Some(CLOSED) {
                 *self.rx.lock().unwrap() = Some(rx);
                 self.drop_child();
-                return Err(Failure::new(
-                    "Claude Code stopped unexpectedly. Try again to restart it.",
-                ));
+                return Err(Failure::new(STOPPED));
             }
         }
         let sent = proc.send(&json!({
@@ -670,10 +678,7 @@ impl ClaudeProvider {
         let outcome = if sent {
             self.stream(&rx, &proc, sink)
         } else {
-            Outcome::Failed(Failure::hinted(
-                "Claude Code stopped unexpectedly. Try again to restart it.",
-                "dead",
-            ))
+            Outcome::Failed(Failure::hinted(STOPPED, "dead"))
         };
         *self.rx.lock().unwrap() = Some(rx);
         match outcome {
@@ -715,10 +720,7 @@ impl ClaudeProvider {
                     if self.pending.load(Ordering::SeqCst) > 0 {
                         last_event = Instant::now();
                     } else if last_event.elapsed() > IDLE_TIMEOUT {
-                        return Outcome::Failed(Failure::hinted(
-                            "Claude stopped responding.",
-                            "dead",
-                        ));
+                        return Outcome::Failed(Failure::hinted(NO_RESPONSE, "dead"));
                     }
                     continue;
                 }
@@ -726,10 +728,7 @@ impl ClaudeProvider {
                     return if cancelled() {
                         Outcome::Interrupted
                     } else {
-                        Outcome::Failed(Failure::hinted(
-                            "Claude Code stopped unexpectedly. Try again to restart it.",
-                            "dead",
-                        ))
+                        Outcome::Failed(Failure::hinted(STOPPED, "dead"))
                     };
                 }
             };
@@ -752,9 +751,9 @@ impl ClaudeProvider {
                             .trim()
                             .to_string();
                         let message = if tail.is_empty() {
-                            "Claude Code stopped unexpectedly. Try again to restart it.".to_string()
+                            STOPPED.to_string()
                         } else {
-                            format!("Claude Code stopped: {tail}")
+                            format!("{STOPPED_WITH}{tail}")
                         };
                         return Outcome::Failed(Failure::hinted(message, "dead"));
                     }

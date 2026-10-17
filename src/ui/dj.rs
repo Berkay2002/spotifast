@@ -336,7 +336,10 @@ fn stamp(seconds: i64, locale: Locale) -> Option<String> {
         // Translators: Keep {time} exactly as written. It becomes a clock time, such as 22:14.
         gettext(locale, "Today {time}").replace("{time}", &time)
     } else {
-        format!("{} {time}", at.strftime("%b %-d"))
+        format!(
+            "{} {time}",
+            crate::util::format_date(locale, &at.strftime("%Y-%m-%d").to_string())
+        )
     })
 }
 
@@ -382,9 +385,13 @@ fn chat(
             }
         });
     }
-    if let Some(hint) = &dj.hint {
+    if let Some(text) = dj
+        .hint
+        .as_deref()
+        .and_then(|hint| crate::dj::session::hint_text(hint, locale))
+    {
         column(ui, COLUMN, |ui| {
-            theme::text(ui, hint.clone(), theme::regular(12.5), palette.secondary);
+            theme::text(ui, text, theme::regular(12.5), palette.secondary);
         });
     }
     cx.actions
