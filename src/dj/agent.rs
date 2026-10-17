@@ -6,6 +6,7 @@
 
 use super::session::{Line, LineKind};
 use super::tools::{Cadence, Slot};
+use crate::i18n::{Locale, gettext};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -255,6 +256,46 @@ impl Schedules {
 }
 
 /// How a task's time reads back to the model: "daily at 08:30".
+/// The same words as [`slot_text`] in the listener's language, for what the page shows.
+pub fn slot_label(slot: &Slot, locale: Locale) -> String {
+    let time = format!("{:02}:{:02}", slot.minute / 60, slot.minute % 60);
+    let days = [
+        gettext(locale, "Monday"),
+        gettext(locale, "Tuesday"),
+        gettext(locale, "Wednesday"),
+        gettext(locale, "Thursday"),
+        gettext(locale, "Friday"),
+        gettext(locale, "Saturday"),
+        gettext(locale, "Sunday"),
+    ];
+    match slot.cadence {
+        // Translators: Keep {date} and {time} exactly as written. They become a date and a clock
+        // time, for a task that runs once.
+        Cadence::Once => gettext(locale, "once on {date} at {time}")
+            .replace(
+                "{date}",
+                slot.date
+                    .as_deref()
+                    .unwrap_or(&gettext(locale, "an unknown day")),
+            )
+            .replace("{time}", &time),
+        // Translators: Keep {time} exactly as written. It becomes a clock time.
+        Cadence::Daily => gettext(locale, "daily at {time}").replace("{time}", &time),
+        // Translators: Keep {time} exactly as written. It becomes a clock time.
+        Cadence::Weekdays => gettext(locale, "on weekdays at {time}").replace("{time}", &time),
+        // Translators: Keep {day} and {time} exactly as written. They become a weekday name and
+        // a clock time, for a task that runs every week.
+        Cadence::Weekly => gettext(locale, "every {day} at {time}")
+            .replace(
+                "{day}",
+                slot.weekday
+                    .and_then(|d| days.get(d as usize))
+                    .map_or(&*gettext(locale, "week"), |day| &**day),
+            )
+            .replace("{time}", &time),
+    }
+}
+
 pub fn slot_text(slot: &Slot) -> String {
     let time = format!("{:02}:{:02}", slot.minute / 60, slot.minute % 60);
     const DAYS: [&str; 7] = [

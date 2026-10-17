@@ -118,8 +118,10 @@ the DJ to Spotify only.
 
 ## Known gaps
 
-The DJ's text is English only for now; it is not in the translation
-catalogues yet. Claude Code is the only provider.
+The DJ's page, settings, approval cards and log lines are in the translation
+catalogues. What the model writes stays in the language it answers in, and the
+provider's own error messages (`src/dj/claude.rs`) are still English. Claude
+Code is the only provider.
 
 The reasoning and the cards (covers, trays) are drawn from what happened
 during the conversation and are not saved: a chat you reopen shows its

@@ -943,7 +943,14 @@ fn contents(app: &mut App, ui: &mut egui::Ui, grid_art: Option<Rect>) {
         app.actions.push(Action::Open(Page::Home));
     }
     if app.settings.dj_enabled
-        && nav_row(ui, &palette, Icon::Sparkles, "DJ", page == Page::Dj).clicked()
+        && nav_row(
+            ui,
+            &palette,
+            Icon::Sparkles,
+            &gettext(locale, "DJ"),
+            page == Page::Dj,
+        )
+        .clicked()
     {
         app.actions.push(Action::Open(Page::Dj));
     }

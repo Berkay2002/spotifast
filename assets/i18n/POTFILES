@@ -32,3 +32,8 @@ src/ui/winamp/mod.rs
 src/ui/winamp/playlist.rs
 src/util.rs
 src/window.rs
+src/ui/dj.rs
+src/ui/dj_crate.rs
+src/app/dj.rs
+src/dj/session.rs
+src/dj/agent.rs

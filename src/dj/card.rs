@@ -56,7 +56,7 @@ pub struct Ask {
     /// Up to four covers for the collage.
     pub covers: Vec<String>,
     /// The label of the button that allows it.
-    pub confirm: &'static str,
+    pub confirm: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -120,6 +120,7 @@ impl App {
     /// Once a frame: applies what the DJ's turn reported and answers its tool calls.
     pub(super) fn handle_dj(&mut self) {
         self.dj.web = self.settings.dj_web;
+        self.dj.locale = self.locale;
         if let Some(id) = self.user_id().map(str::to_string) {
             self.dj.set_account(&id);
         }
@@ -134,8 +135,11 @@ impl App {
             }
         }
         for summary in self.dj.expire_approvals() {
-            self.dj
-                .note(format!("No answer, so nothing was changed: {summary}"));
+            // Translators: Keep {summary} exactly as written. It becomes what the DJ had asked to do.
+            self.dj.note(
+                gettext(self.locale, "No answer, so nothing was changed: {summary}")
+                    .replace("{summary}", &summary),
+            );
         }
         self.dj_expire_jobs();
         if !self.settings.dj_enabled {
@@ -236,17 +240,24 @@ impl App {
         };
         if approve && approval.asked.elapsed() > crate::dj::session::APPROVAL_WAIT {
             // the model was told nothing changed: it must stay true
-            self.dj.note(format!(
-                "That took too long, so nothing was changed: {}",
-                approval.summary
-            ));
+            // Translators: Keep {summary} exactly as written. It becomes what the DJ had asked to do.
+            self.dj.note(
+                gettext(
+                    self.locale,
+                    "That took too long, so nothing was changed: {summary}",
+                )
+                .replace("{summary}", &approval.summary),
+            );
             let _ = approval.reply.send(Err(
                 "The listener did not answer in time, so nothing was changed.".to_string(),
             ));
         } else if approve {
             self.dj_run(approval.call, approval.reply);
         } else {
-            self.dj.note(format!("Declined: {}", approval.summary));
+            // Translators: Keep {summary} exactly as written. It becomes what the DJ had asked to do.
+            self.dj.note(
+                gettext(self.locale, "Declined: {summary}").replace("{summary}", &approval.summary),
+            );
             let _ = approval.reply.send(Err(
                 "The listener declined this change, so nothing was changed. Do not ask again \
                  unless they ask for it."
@@ -309,6 +320,7 @@ impl App {
     /// 4 more". Every song in a change is one the DJ has seen (`dj_known_tracks`), so none is
     /// shown as a bare "a song".
     fn dj_names(&self, uris: &[String]) -> String {
+        let l = self.locale;
         let name = |uri: &String| {
             self.dj_track(uri)
                 .map(|track| {
@@ -320,7 +332,11 @@ impl App {
                     if by.is_empty() {
                         render::clean(&track.name)
                     } else {
-                        format!("{} by {}", render::clean(&track.name), by.join(", "))
+                        // Translators: Keep {title} and {artists} exactly as written. They become a
+                        // song's title and its artists.
+                        gettext(l, "{title} by {artists}")
+                            .replace("{title}", &render::clean(&track.name))
+                            .replace("{artists}", &by.join(", "))
                     }
                 })
                 .unwrap_or_else(|| uri.clone())
@@ -328,7 +344,11 @@ impl App {
         let shown: Vec<String> = uris.iter().take(8).map(name).collect();
         let mut out = shown.join("; ");
         if uris.len() > 8 {
-            out.push_str(&format!(" and {} more", uris.len() - 8));
+            // Translators: Keep {names} and {count} exactly as written. They become a list of
+            // songs and the number of songs it does not show.
+            out = gettext(l, "{names} and {count} more")
+                .replace("{names}", &out)
+                .replace("{count}", &(uris.len() - 8).to_string());
         }
         out
     }
@@ -337,11 +357,12 @@ impl App {
         util::uri_id(uri)
             .and_then(|id| self.library_entry(id))
             .map(|playlist| render::clean(&playlist.name))
-            .unwrap_or_else(|| "a playlist".to_string())
+            .unwrap_or_else(|| gettext(self.locale, "a playlist").into_owned())
     }
 
     /// The changes waiting for the listener, as the page's approval cards.
     pub fn dj_asks(&self) -> Vec<crate::dj::card::Ask> {
+        let l = self.locale;
         self.dj
             .approvals
             .iter()
@@ -358,31 +379,39 @@ impl App {
                         name, uris, public, ..
                     } => crate::dj::card::Ask {
                         id: approval.id,
-                        title: format!("Create playlist \u{b7} {}", render::clean(name)),
+                        // Translators: Keep {name} exactly as written. It becomes the new playlist's name.
+                        title: gettext(l, "Create playlist · {name}")
+                            .replace("{name}", &render::clean(name)),
                         detail: format!(
-                            "{} \u{b7} {}",
-                            if *public { "Public" } else { "Private" },
-                            songs(uris.len())
+                            "{} · {}",
+                            if *public {
+                                gettext(l, "Public")
+                            } else {
+                                gettext(l, "Private")
+                            },
+                            l.song_count(uris.len() as u32)
                         ),
                         full: approval.summary.clone(),
                         covers: covers(uris),
-                        confirm: "Create",
+                        confirm: gettext(l, "Create").into_owned(),
                     },
                     Call::AddToPlaylist { uri, uris } => crate::dj::card::Ask {
                         id: approval.id,
-                        title: format!("Add to {}", self.dj_playlist_name(uri)),
-                        detail: songs(uris.len()),
+                        // Translators: Keep {name} exactly as written. It becomes a playlist's name.
+                        title: gettext(l, "Add to {name}")
+                            .replace("{name}", &self.dj_playlist_name(uri)),
+                        detail: l.song_count(uris.len() as u32),
                         full: approval.summary.clone(),
                         covers: covers(uris),
-                        confirm: "Add",
+                        confirm: gettext(l, "Add").into_owned(),
                     },
                     Call::LikeTracks { uris } => crate::dj::card::Ask {
                         id: approval.id,
-                        title: "Add to Liked Songs".to_string(),
-                        detail: songs(uris.len()),
+                        title: gettext(l, "Add to Liked Songs").into_owned(),
+                        detail: l.song_count(uris.len() as u32),
                         full: approval.summary.clone(),
                         covers: covers(uris),
-                        confirm: "Add",
+                        confirm: gettext(l, "Add").into_owned(),
                     },
                     _ => crate::dj::card::Ask {
                         id: approval.id,
@@ -390,7 +419,7 @@ impl App {
                         detail: String::new(),
                         full: String::new(),
                         covers: Vec::new(),
-                        confirm: "Approve",
+                        confirm: gettext(l, "Approve").into_owned(),
                     },
                 }
             })
@@ -399,20 +428,21 @@ impl App {
 
     /// What a change would do, in the listener's words, for the approval card.
     fn dj_summary(&self, call: &Call) -> String {
+        let l = self.locale;
         match call {
             Call::LikeTracks { uris } => {
-                format!(
-                    "Add {} to Liked Songs: {}",
-                    songs(uris.len()),
-                    self.dj_names(uris)
-                )
+                // Translators: Keep {songs} and {names} exactly as written. They become a number of
+                // songs and the songs' titles.
+                gettext(l, "Add {songs} to Liked Songs: {names}")
+                    .replace("{songs}", &l.song_count(uris.len() as u32))
+                    .replace("{names}", &self.dj_names(uris))
             }
             Call::UnlikeTracks { uris } => {
-                format!(
-                    "Remove {} from Liked Songs: {}",
-                    songs(uris.len()),
-                    self.dj_names(uris)
-                )
+                // Translators: Keep {songs} and {names} exactly as written. They become a number of
+                // songs and the songs' titles.
+                gettext(l, "Remove {songs} from Liked Songs: {names}")
+                    .replace("{songs}", &l.song_count(uris.len() as u32))
+                    .replace("{names}", &self.dj_names(uris))
             }
             Call::CreatePlaylist {
                 name,
@@ -420,61 +450,85 @@ impl App {
                 uris,
                 public,
             } => {
-                let mut out = format!(
-                    "Create the {} playlist \"{}\"",
-                    if *public { "public" } else { "private" },
-                    render::clean(name),
-                );
-                if !description.is_empty() {
-                    out.push_str(&format!(
-                        ", described as \"{}\"",
-                        render::clean(description)
-                    ));
+                // Translators: Keep {name} exactly as written. It becomes the new playlist's name.
+                let mut out = if *public {
+                    gettext(l, "Create the public playlist \"{name}\"")
+                } else {
+                    gettext(l, "Create the private playlist \"{name}\"")
                 }
-                out.push_str(&format!(" with {}", songs(uris.len())));
+                .replace("{name}", &render::clean(name));
+                if !description.is_empty() {
+                    // Translators: Keep {description} exactly as written. It is added after the
+                    // playlist's name.
+                    out.push_str(
+                        &gettext(l, ", described as \"{description}\"")
+                            .replace("{description}", &render::clean(description)),
+                    );
+                }
+                // Translators: Keep {songs} exactly as written. It is added after the playlist's
+                // name and becomes a number of songs.
+                out.push_str(
+                    &gettext(l, " with {songs}")
+                        .replace("{songs}", &l.song_count(uris.len() as u32)),
+                );
                 if !uris.is_empty() {
-                    out.push_str(&format!(": {}", self.dj_names(uris)));
+                    out.push_str(": ");
+                    out.push_str(&self.dj_names(uris));
                 }
                 out
             }
-            Call::AddToPlaylist { uri, uris } => format!(
-                "Add {} to \"{}\": {}",
-                songs(uris.len()),
-                self.dj_playlist_name(uri),
-                self.dj_names(uris)
-            ),
-            Call::RemoveFromPlaylist { uri, uris } => format!(
-                "Remove {} from \"{}\": {}",
-                songs(uris.len()),
-                self.dj_playlist_name(uri),
-                self.dj_names(uris)
-            ),
+            // Translators: Keep {songs}, {name} and {names} exactly as written. They become a number
+            // of songs, a playlist's name and the songs' titles.
+            Call::AddToPlaylist { uri, uris } => gettext(l, "Add {songs} to \"{name}\": {names}")
+                .replace("{songs}", &l.song_count(uris.len() as u32))
+                .replace("{name}", &self.dj_playlist_name(uri))
+                .replace("{names}", &self.dj_names(uris)),
+            // Translators: Keep {songs}, {name} and {names} exactly as written. They become a number
+            // of songs, a playlist's name and the songs' titles.
+            Call::RemoveFromPlaylist { uri, uris } => {
+                gettext(l, "Remove {songs} from \"{name}\": {names}")
+                    .replace("{songs}", &l.song_count(uris.len() as u32))
+                    .replace("{name}", &self.dj_playlist_name(uri))
+                    .replace("{names}", &self.dj_names(uris))
+            }
             Call::RenamePlaylist {
                 uri,
                 name,
                 description,
             } => {
-                let mut out = format!("Change \"{}\"", self.dj_playlist_name(uri));
+                // Translators: Keep {name} exactly as written. It becomes a playlist's name.
+                let mut out =
+                    gettext(l, "Change \"{name}\"").replace("{name}", &self.dj_playlist_name(uri));
                 if let Some(name) = name {
-                    out.push_str(&format!(", new name \"{}\"", render::clean(name)));
+                    // Translators: Keep {name} exactly as written. It becomes the playlist's new name.
+                    out.push_str(
+                        &gettext(l, ", new name \"{name}\"")
+                            .replace("{name}", &render::clean(name)),
+                    );
                 }
                 if let Some(description) = description {
-                    out.push_str(&format!(
-                        ", new description \"{}\"",
-                        render::clean(description)
-                    ));
+                    // Translators: Keep {description} exactly as written. It becomes the playlist's
+                    // new description.
+                    out.push_str(
+                        &gettext(l, ", new description \"{description}\"")
+                            .replace("{description}", &render::clean(description)),
+                    );
                 }
                 out
             }
             Call::Remember { note } => {
-                format!("Remember for next time: \"{}\"", render::clean(note))
+                // Translators: Keep {note} exactly as written. It becomes a note the DJ keeps.
+                gettext(l, "Remember for next time: \"{note}\"")
+                    .replace("{note}", &render::clean(note))
             }
-            Call::ScheduleTask { slot, prompt } => format!(
-                "Run this by itself {}: \"{}\"",
-                agent::slot_text(slot),
-                render::clean(prompt)
-            ),
-            _ => "Make a change".to_string(),
+            // Translators: Keep {when} and {task} exactly as written. They become when a task runs
+            // (such as "daily at 08:00") and what the task is.
+            Call::ScheduleTask { slot, prompt } => {
+                gettext(l, "Run this by itself {when}: \"{task}\"")
+                    .replace("{when}", &agent::slot_label(slot, l))
+                    .replace("{task}", &render::clean(prompt))
+            }
+            _ => gettext(l, "Make a change").into_owned(),
         }
     }
 
@@ -624,6 +678,7 @@ impl App {
 
     /// The calls the app can answer on the spot.
     fn dj_sync(&mut self, call: Call) -> Result<ToolReply, String> {
+        let l = self.locale;
         match call {
             Call::NowPlaying => reply_ok(render::now_playing(self.now_playing().as_ref()), None),
             Call::PlaybackState => {
@@ -706,7 +761,9 @@ impl App {
                     songs: shown,
                     total: count,
                 };
-                reply_card(format!("{said}."), said, card)
+                let log =
+                    gettext(l, "Queued {songs}").replace("{songs}", &l.song_count(count as u32));
+                reply_card(format!("{said}."), log, card)
             }
             Call::Play { uri } => {
                 let name = util::uri_id(&uri)
@@ -725,21 +782,28 @@ impl App {
                         offset_index: None,
                     });
                 }
+                // Translators: Keep {what} exactly as written. It becomes the name of what plays.
+                let log = gettext(l, "Playing {what}").replace(
+                    "{what}",
+                    &name
+                        .as_deref()
+                        .map_or_else(|| gettext(l, "something").into_owned(), render::clean),
+                );
                 let what = name.map_or_else(|| format!("a {kind}"), |name| render::clean(&name));
-                reply_ok(format!("Playing {what}."), Some(format!("Playing {what}")))
+                reply_ok(format!("Playing {what}."), Some(log))
             }
             Call::Skip => {
                 self.actions.push(Action::Next);
-                reply_ok("Skipped.", Some("Skipped".into()))
+                reply_ok("Skipped.", Some(gettext(l, "Skipped").into_owned()))
             }
             Call::Previous => {
                 self.actions.push(Action::Previous);
-                reply_ok("Went back.", Some("Went back".into()))
+                reply_ok("Went back.", Some(gettext(l, "Went back").into_owned()))
             }
             Call::Pause => match self.now_playing() {
                 Some(now) if now.playing => {
                     self.actions.push(Action::TogglePlay);
-                    reply_ok("Paused.", Some("Paused".into()))
+                    reply_ok("Paused.", Some(gettext(l, "Paused").into_owned()))
                 }
                 Some(_) => reply_ok("It is already paused.", None),
                 None => reply_ok("Nothing is playing.", None),
@@ -747,7 +811,7 @@ impl App {
             Call::Resume => match self.now_playing() {
                 Some(now) if !now.playing => {
                     self.actions.push(Action::TogglePlay);
-                    reply_ok("Resumed.", Some("Resumed".into()))
+                    reply_ok("Resumed.", Some(gettext(l, "Resumed").into_owned()))
                 }
                 Some(_) => reply_ok("It is already playing.", None),
                 None => Err("Nothing to resume. Start something with play.".into()),
@@ -758,31 +822,53 @@ impl App {
                 };
                 let ms = (seconds.saturating_mul(1000)).min(now.duration_ms.saturating_sub(1000));
                 self.actions.push(Action::Seek(ms));
-                let at = format!("Jumped to {}:{:02}", ms / 60_000, (ms / 1000) % 60);
-                reply_ok(format!("{at}."), Some(at))
+                let time = format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60);
+                // Translators: Keep {time} exactly as written. It becomes a position in the song, such as 1:30.
+                let log = gettext(l, "Jumped to {time}").replace("{time}", &time);
+                reply_ok(format!("Jumped to {time}."), Some(log))
             }
             Call::SetVolume { percent } => {
                 if self.now_playing().is_some_and(|n| !n.can_set_volume) {
                     return Err("The playing device does not take volume changes.".into());
                 }
                 self.actions.push(Action::SetVolume(percent));
-                let said = format!("Volume {percent}%");
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {percent} exactly as written. It becomes the volume, such as 40.
+                let log =
+                    gettext(l, "Volume {percent}%").replace("{percent}", &percent.to_string());
+                reply_ok(format!("Volume {percent}%."), Some(log))
             }
             Call::SetShuffle { on } => {
                 self.actions.push(Action::SetShuffle(on));
-                let said = format!("Shuffle {}", if on { "on" } else { "off" });
-                reply_ok(format!("{said}."), Some(said))
+                let log = if on {
+                    gettext(l, "Shuffle on")
+                } else {
+                    gettext(l, "Shuffle off")
+                };
+                reply_ok(
+                    format!("Shuffle {}.", if on { "on" } else { "off" }),
+                    Some(log.into_owned()),
+                )
             }
             Call::SetRepeat { mode } => {
-                let (repeat, word) = match mode {
-                    RepeatKind::Off => (crate::player::RepeatMode::Off, "off"),
-                    RepeatKind::Track => (crate::player::RepeatMode::Track, "one song"),
-                    RepeatKind::Context => (crate::player::RepeatMode::Context, "the list"),
+                let (repeat, word, log) = match mode {
+                    RepeatKind::Off => (
+                        crate::player::RepeatMode::Off,
+                        "off",
+                        gettext(l, "Repeat off"),
+                    ),
+                    RepeatKind::Track => (
+                        crate::player::RepeatMode::Track,
+                        "one song",
+                        gettext(l, "Repeat one song"),
+                    ),
+                    RepeatKind::Context => (
+                        crate::player::RepeatMode::Context,
+                        "the list",
+                        gettext(l, "Repeat the list"),
+                    ),
                 };
                 self.actions.push(Action::SetRepeat(repeat));
-                let said = format!("Repeat {word}");
-                reply_ok(format!("{said}."), Some(said))
+                reply_ok(format!("Repeat {word}."), Some(log.into_owned()))
             }
             Call::ClearQueue => {
                 if !self.can_clear_queue() {
@@ -810,7 +896,11 @@ impl App {
                     songs: gone,
                     total: queued,
                 };
-                reply_card("Cleared the queue.", "Cleared the queue".into(), card)
+                reply_card(
+                    "Cleared the queue.",
+                    gettext(l, "Cleared the queue").into_owned(),
+                    card,
+                )
             }
             Call::RemoveFromQueue { uris } => {
                 if !self.queue_locally_reorderable() {
@@ -858,7 +948,9 @@ impl App {
                     songs: gone,
                     total: count,
                 };
-                reply_card(format!("{said}."), said, card)
+                let log = gettext(l, "Took {songs} out of the queue")
+                    .replace("{songs}", &l.song_count(count as u32));
+                reply_card(format!("{said}."), log, card)
             }
             Call::TransferPlayback { device_id } => {
                 let found = self
@@ -871,22 +963,34 @@ impl App {
                 };
                 self.actions.push(Action::Transfer(device_id));
                 self.actions.push(Action::RefreshDevices);
-                let said = format!("Moved playback to {}", render::clean(&name));
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {name} exactly as written. It becomes a device's name.
+                let log =
+                    gettext(l, "Moved playback to {name}").replace("{name}", &render::clean(&name));
+                reply_ok(
+                    format!("Moved playback to {}.", render::clean(&name)),
+                    Some(log),
+                )
             }
             Call::LikeTracks { uris } => {
                 let count = uris.len();
                 self.actions
                     .push(Action::SetSavedMany { uris, saved: true });
-                let said = format!("Liked {}", songs(count));
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {songs} exactly as written. It becomes a number of songs.
+                let log =
+                    gettext(l, "Liked {songs}").replace("{songs}", &l.song_count(count as u32));
+                reply_ok(format!("Liked {}.", songs(count)), Some(log))
             }
             Call::UnlikeTracks { uris } => {
                 let count = uris.len();
                 self.actions
                     .push(Action::SetSavedMany { uris, saved: false });
-                let said = format!("Removed {} from Liked Songs", songs(count));
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {songs} exactly as written. It becomes a number of songs.
+                let log = gettext(l, "Removed {songs} from Liked Songs")
+                    .replace("{songs}", &l.song_count(count as u32));
+                reply_ok(
+                    format!("Removed {} from Liked Songs.", songs(count)),
+                    Some(log),
+                )
             }
             Call::RemoveFromPlaylist { uri, uris } => {
                 let (id, name) = self.dj_editable(&uri, true)?;
@@ -895,8 +999,15 @@ impl App {
                     playlist_id: id,
                     uris,
                 });
-                let said = format!("Removed {} from {}", songs(count), render::clean(&name));
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {songs} and {name} exactly as written. They become a number of
+                // songs and a playlist's name.
+                let log = gettext(l, "Removed {songs} from {name}")
+                    .replace("{songs}", &l.song_count(count as u32))
+                    .replace("{name}", &render::clean(&name));
+                reply_ok(
+                    format!("Removed {} from {}.", songs(count), render::clean(&name)),
+                    Some(log),
+                )
             }
             Call::RenamePlaylist {
                 uri,
@@ -916,14 +1027,16 @@ impl App {
                     description: description.unwrap_or(current_description),
                     public: None,
                 });
-                let said = format!("Updated {}", render::clean(&label));
-                reply_ok(format!("{said}."), Some(said))
+                // Translators: Keep {name} exactly as written. It becomes a playlist's name.
+                let log = gettext(l, "Updated {name}").replace("{name}", &render::clean(&label));
+                reply_ok(format!("Updated {}.", render::clean(&label)), Some(log))
             }
             Call::Remember { note } => {
                 self.dj.memory.remember(&note)?;
                 reply_ok(
                     "Remembered.",
-                    Some(format!("Noted: {}", render::clean(&note))),
+                    // Translators: Keep {note} exactly as written. It becomes a note the DJ keeps.
+                    Some(gettext(l, "Noted: {note}").replace("{note}", &render::clean(&note))),
                 )
             }
             Call::Forget { note } => {
@@ -933,17 +1046,18 @@ impl App {
                 }
                 reply_ok(
                     format!("Forgot {gone} note(s)."),
-                    Some("Forgot a note".into()),
+                    Some(gettext(l, "Forgot a note").into_owned()),
                 )
             }
             Call::Memory => reply_ok(render::memory(self.dj.memory.notes()), None),
             Call::ScheduleTask { slot, prompt } => {
                 let when = agent::slot_text(&slot);
+                // Translators: Keep {when} exactly as written. It becomes when a task runs, such as
+                // "daily at 08:00".
+                let log =
+                    gettext(l, "Scheduled: {when}").replace("{when}", &agent::slot_label(&slot, l));
                 let id = self.dj.schedules.add(slot, &prompt)?;
-                reply_ok(
-                    format!("Scheduled task {id}: {when}."),
-                    Some(format!("Scheduled: {when}")),
-                )
+                reply_ok(format!("Scheduled task {id}: {when}."), Some(log))
             }
             Call::ListSchedules => {
                 let tasks = self.dj.schedules.tasks();
@@ -968,7 +1082,10 @@ impl App {
             }
             Call::CancelSchedule { id } => {
                 if self.dj.schedules.cancel(id) {
-                    reply_ok("Cancelled.", Some("Cancelled a scheduled task".into()))
+                    reply_ok(
+                        "Cancelled.",
+                        Some(gettext(l, "Cancelled a scheduled task").into_owned()),
+                    )
                 } else {
                     Err("There is no scheduled task with that number.".into())
                 }
@@ -1051,32 +1168,59 @@ impl App {
             songs: fresh.iter().take(CARD_SONGS).map(CardSong::track).collect(),
             total: fresh.len(),
         });
-        let said = if fresh.is_empty() {
-            format!(
+        let l = self.locale;
+        let (said, log) = if fresh.is_empty() {
+            let said = format!(
                 "Nothing added: {} already in {list}",
                 if before == 1 {
                     "that song is".to_string()
                 } else {
                     format!("all {before} songs are")
                 }
+            );
+            let log = ngettext(
+                l,
+                // Translators: Keep {count} and {name} exactly as written. They become a number of
+                // songs and a playlist's name.
+                "Nothing added: {count} song is already in {name}",
+                "Nothing added: all {count} songs are already in {name}",
+                before as u32,
             )
+            .replace("{count}", &before.to_string())
+            .replace("{name}", &list);
+            (said, log)
         } else {
-            let added = songs(fresh.len());
+            let fresh_count = fresh.len();
+            let added = songs(fresh_count);
             self.actions.push(Action::ConfirmAddToPlaylist {
                 playlist_id,
                 playlist_name,
                 items: fresh.into_iter().map(PlayableItem::Track).collect(),
                 position: None,
             });
-            if skipped == 0 {
+            let log = if skipped == 0 {
+                gettext(l, "Added {songs} to {name}")
+            } else {
+                // Translators: Keep {songs}, {name} and {skipped} exactly as written. They become a
+                // number of songs, a playlist's name and the number of songs it already had.
+                gettext(
+                    l,
+                    "Added {songs} to {name}, left out {skipped} already there",
+                )
+            }
+            .replace("{songs}", &l.song_count(fresh_count as u32))
+            .replace("{name}", &list)
+            .replace("{skipped}", &skipped.to_string());
+            let said = if skipped == 0 {
                 format!("Added {added} to {list}")
             } else {
                 format!("Added {added} to {list}, left out {skipped} it already had")
-            }
+            };
+            (said, log)
         };
         let _ = reply.send(Ok(ToolReply {
             text: format!("{said}."),
-            log: Some(said),
+            log: Some(log),
             card,
         }));
     }
@@ -1152,10 +1296,17 @@ impl App {
                 self.track_cache.insert(id, track);
             }
         }
+        let l = self.locale;
         let read = |name: &str, count: usize, cover: Option<String>| {
             let detail = songs(count);
             (
-                Some(format!("Read {name} \u{b7} {detail}")),
+                // Translators: Keep {name} and {songs} exactly as written. They become the name of
+                // what the DJ read (a playlist, an album) and its number of songs.
+                Some(
+                    gettext(l, "Read {name} · {songs}")
+                        .replace("{name}", name)
+                        .replace("{songs}", &l.song_count(count as u32)),
+                ),
                 Some(Card::Read {
                     what: "songs".into(),
                     name: name.to_string(),
@@ -1191,14 +1342,24 @@ impl App {
                     .find_map(|track| track.image(300))
                     .map(str::to_string);
                 let count = total.map_or(tracks.len(), |total| total as usize);
-                let (log, card) = read(title, count, cover);
+                let shown = match title {
+                    "Album songs" => gettext(l, "Album songs"),
+                    "The artist's top songs" => gettext(l, "The artist's top songs"),
+                    "Liked Songs" => gettext(l, "Liked Songs"),
+                    "The listener's top songs" => gettext(l, "Your top songs"),
+                    other => other.into(),
+                };
+                let (log, card) = read(&shown, count, cover);
                 (render::tracks(title, &tracks, total, offset), log, card)
             }
             (DjData::Tracks { tracks, .. }, Shape::Info) => {
                 (render::track_info(&tracks), None, None)
             }
             (DjData::Albums(albums), _) => {
-                let log = Some(format!("Read {} albums", albums.len()));
+                let log = Some(
+                    // Translators: Keep {count} exactly as written. It becomes a number of albums.
+                    gettext(l, "Read {count} albums").replace("{count}", &albums.len().to_string()),
+                );
                 (render::albums(&albums), log, None)
             }
             (DjData::Artists(artists), _) => {
@@ -1210,7 +1371,11 @@ impl App {
                         .map(|artist| card::picture(&artist.images))
                         .collect(),
                 };
-                let log = Some(format!("Read your top artists \u{b7} {}", artists.len()));
+                let log = Some(
+                    // Translators: Keep {count} exactly as written. It becomes a number of artists.
+                    gettext(l, "Read your top artists · {count}")
+                        .replace("{count}", &artists.len().to_string()),
+                );
                 (render::artists(&artists), log, Some(card))
             }
             _ => (
@@ -1300,9 +1465,14 @@ impl App {
                     render::clean(&playlist.name),
                     songs(count)
                 );
+                // Translators: Keep {name} and {songs} exactly as written. They become a playlist's
+                // name and its number of songs.
+                let log = gettext(self.locale, "Created {name} with {songs}")
+                    .replace("{name}", &render::clean(&playlist.name))
+                    .replace("{songs}", &self.locale.song_count(count as u32));
                 let _ = job.reply.send(Ok(ToolReply {
                     text: format!("{said}. | {}", playlist.uri),
-                    log: Some(said),
+                    log: Some(log),
                     card: Some(card),
                 }));
             }
@@ -1442,7 +1612,11 @@ impl App {
                     let what = render::clean(&job.query);
                     Ok(ToolReply {
                         text: render::search(&job.results, &job.kinds, job.limit),
-                        log: Some(format!("Searched for \"{what}\"")),
+                        // Translators: Keep {what} exactly as written. It becomes the search words.
+                        log: Some(
+                            gettext(self.locale, "Searched for \"{what}\"")
+                                .replace("{what}", &what),
+                        ),
                         card: Some(Card::Found { what, covers }),
                     })
                 }

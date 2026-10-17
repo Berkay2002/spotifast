@@ -14,6 +14,7 @@ use egui::{Align2, Color32, Mesh, Painter, Pos2, Rect, Sense, Shape, TextureId, 
 use super::widgets;
 use crate::api::models::PlayableItem;
 use crate::app::App;
+use crate::i18n::gettext;
 use crate::motion;
 use crate::theme::{self, Icon, Palette};
 
@@ -307,7 +308,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     painter.text(
         rect.left_top() + vec2(2.0, 2.0),
         Align2::LEFT_TOP,
-        "Up next",
+        gettext(app.locale, "Up next"),
         theme::regular(12.5),
         palette.dim,
     );

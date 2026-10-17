@@ -13,6 +13,7 @@ use super::agent::{self, Chats, Feed, Memory, Schedules};
 use super::claude::{ClaudeProvider, ToolHost};
 use super::tools::{Call, ToolReply};
 use super::{AskRequest, ChatEvent, Provider, Sink, Status};
+use crate::i18n::{Locale, gettext};
 use fastframe_shell::Waker;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
@@ -110,6 +111,8 @@ pub struct Dj {
     pub revision: u64,
     /// Whether the model may search the web (the setting, kept current by the app).
     pub web: bool,
+    /// The app's language, kept current by the app, for the lines the chat adds itself.
+    pub locale: Locale,
     /// Changes waiting for the listener's yes or no, oldest first.
     pub approvals: Vec<Approval>,
     next_approval: u64,
@@ -197,6 +200,7 @@ impl Dj {
             input: String::new(),
             revision: 0,
             web: false,
+            locale: Locale::default(),
             approvals: Vec::new(),
             next_approval: 0,
             memory: Memory::default(),
@@ -655,7 +659,10 @@ impl Dj {
                 self.live = false;
                 self.busy = false;
                 self.phase = None;
-                self.push(LineKind::Tool, "Stopped.".to_string());
+                self.push(
+                    LineKind::Tool,
+                    gettext(self.locale, "Stopped.").into_owned(),
+                );
                 self.save_chat();
             }
             ChatEvent::Error { message, hint } => {
@@ -694,12 +701,14 @@ impl Drop for Dj {
 }
 
 /// The page's explanation when the provider cannot be used, `None` when it can.
-pub fn blocker(st: &Status) -> Option<String> {
+pub fn blocker(st: &Status, locale: Locale) -> Option<String> {
     if !st.installed {
         return Some(
-            "Claude Code isn't installed. The DJ uses your Claude subscription through the Claude Code \
-             CLI. Install it from claude.com/claude-code, then run `claude login` in a terminal."
-                .to_string(),
+            gettext(
+                locale,
+                "Claude Code isn't installed. The DJ uses your Claude subscription through the Claude Code CLI. Install it from claude.com/claude-code, then run `claude login` in a terminal.",
+            )
+            .into_owned(),
         );
     }
     if let Some(e) = &st.error {
@@ -707,9 +716,11 @@ pub fn blocker(st: &Status) -> Option<String> {
     }
     if !st.logged_in {
         return Some(
-            "Sign in to Claude Code. Run `claude login` in a terminal and sign in with your Claude \
-             account. Spotifast never sees your login."
-                .to_string(),
+            gettext(
+                locale,
+                "Sign in to Claude Code. Run `claude login` in a terminal and sign in with your Claude account. Spotifast never sees your login.",
+            )
+            .into_owned(),
         );
     }
     None
@@ -1059,7 +1070,7 @@ mod tests {
         assert!(!dj.checking());
         assert!(!dj.ready());
         assert!(
-            blocker(dj.status.as_ref().unwrap())
+            blocker(dj.status.as_ref().unwrap(), Locale::default())
                 .unwrap()
                 .contains("isn't installed")
         );
@@ -1067,19 +1078,23 @@ mod tests {
 
     #[test]
     fn blockers_say_what_to_do() {
-        assert!(blocker(&ok_status()).is_none());
+        assert!(blocker(&ok_status(), Locale::default()).is_none());
         let out = Status {
             installed: true,
             logged_in: false,
             ..Status::default()
         };
-        assert!(blocker(&out).unwrap().contains("claude login"));
+        assert!(
+            blocker(&out, Locale::default())
+                .unwrap()
+                .contains("claude login")
+        );
         let env = Status {
             installed: true,
             error: Some("env refuses".into()),
             ..Status::default()
         };
-        assert_eq!(blocker(&env).unwrap(), "env refuses");
+        assert_eq!(blocker(&env, Locale::default()).unwrap(), "env refuses");
     }
 
     type Answer = Result<ToolReply, String>;

@@ -3,8 +3,6 @@
 //!
 //! The chat is read from the session's lines as turns: the listener's message, what the model
 //! thought, what it did (tool rows, with the cards the app built for them), and what it said.
-//!
-//! The strings here are plain English for now (see `docs/_reference/dj.md`).
 
 use egui::text::{LayoutJob, TextFormat};
 use egui::{
@@ -15,6 +13,7 @@ use egui::{
 use crate::app::App;
 use crate::dj::card::{Ask, CARD_SONGS};
 use crate::dj::{Card, CardSong, Line, LineKind};
+use crate::i18n::{Locale, gettext, ngettext, pgettext};
 use crate::images::ArtLoader;
 use crate::model::{Action, Page};
 use crate::motion;
@@ -33,6 +32,7 @@ const CLAUDE: Color32 = Color32::from_rgb(0xd9, 0x77, 0x57);
 /// What the chat's drawing needs besides the lines, and what it asks the app to do.
 struct Cx<'a> {
     palette: Palette,
+    locale: Locale,
     art: &'a ArtLoader,
     actions: Vec<Action>,
 }
@@ -165,16 +165,21 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     super::dj_crate::show(app, ui);
     ui.add_space(16.0);
 
-    let blocker = app.dj.status.as_ref().and_then(crate::dj::session::blocker);
+    let locale = app.locale;
+    let blocker = app
+        .dj
+        .status
+        .as_ref()
+        .and_then(|status| crate::dj::session::blocker(status, locale));
     if let Some(message) = &blocker {
         wrapped(ui, message, theme::regular(14.0), palette.warning);
         ui.add_space(8.0);
         let label = if app.dj.checking() {
-            "Checking…"
+            gettext(locale, "Checking…")
         } else {
-            "Check again"
+            gettext(locale, "Check again")
         };
-        if theme::soft_button(ui, &palette, Some(Icon::Refresh), label, false).clicked()
+        if theme::soft_button(ui, &palette, Some(Icon::Refresh), &label, false).clicked()
             && !app.dj.checking()
         {
             app.actions.push(Action::DjCheck);
@@ -192,13 +197,17 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             ui,
             &palette,
             Icon::Sparkles,
-            "Nothing playing yet",
-            "Tell the DJ what you want: a mood, an artist, a decade. Or let it start from your recent listening.",
+            &gettext(locale, "Nothing playing yet"),
+            &gettext(
+                locale,
+                "Tell the DJ what you want: a mood, an artist, a decade. Or let it start from your recent listening.",
+            ),
         );
         ui.add_space(10.0);
+        let start = gettext(locale, "Start DJ");
         ui.vertical_centered(|ui| {
             ui.add_enabled_ui(usable && !app.dj.busy, |ui| {
-                if theme::pill_button(ui, &palette, "Start DJ", true).clicked() {
+                if theme::pill_button(ui, &palette, &start, true).clicked() {
                     app.actions.push(Action::DjStart);
                 }
             });
@@ -223,7 +232,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             .auto_shrink([false, false])
             .stick_to_bottom(true)
             .show(ui, |ui| {
-                actions = chat(ui, &palette, app.backend.art(), &app.dj, &asks);
+                actions = chat(ui, &palette, locale, app.backend.art(), &app.dj, &asks);
                 // the composer floats over the end of the chat, which ends above it
                 ui.add_space(COMPOSER_H + 40.0);
                 if sent > seen {
@@ -238,6 +247,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 /// The chat's title and the way to another chat. It sits at the page's left edge.
 fn title_row(app: &mut App, ui: &mut Ui) {
     let palette = app.palette;
+    let locale = app.locale;
     let title = match app.dj.lines.iter().find(|l| l.kind == LineKind::User) {
         Some(first) => {
             let mut title: String = first.text.chars().take(36).collect();
@@ -246,14 +256,19 @@ fn title_row(app: &mut App, ui: &mut Ui) {
             }
             title
         }
-        None => "New chat".to_string(),
+        None => gettext(locale, "New chat").into_owned(),
     };
+    let new_chat = gettext(locale, "New chat");
+    let delete_chat = gettext(locale, "Delete this chat");
+    let chats_label = gettext(locale, "Chats");
     let galley = ui
         .painter()
         .layout_no_wrap(title, theme::bold(22.0), palette.text);
     let size = vec2(galley.size().x + 30.0, 34.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Chats"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, chats_label.as_ref())
+    });
     let pos = pos2(rect.left(), rect.center().y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley.clone(), palette.text);
     let chevron = Rect::from_center_size(
@@ -287,7 +302,7 @@ fn title_row(app: &mut App, ui: &mut Ui) {
             ui.set_min_width(260.0);
             ui.set_max_width(360.0);
             ui.add_enabled_ui(!busy, |ui| {
-                if widgets::menu_item(ui, &palette, Some(Icon::Plus), "New chat") {
+                if widgets::menu_item(ui, &palette, Some(Icon::Plus), &new_chat) {
                     app.actions.push(Action::DjNewChat);
                 }
                 if !chats.is_empty() {
@@ -301,7 +316,7 @@ fn title_row(app: &mut App, ui: &mut Ui) {
                 }
                 if has_lines && chats.iter().any(|(id, _)| *id == current) {
                     widgets::menu_separator(ui, &palette);
-                    if widgets::menu_item(ui, &palette, Some(Icon::Trash), "Delete this chat") {
+                    if widgets::menu_item(ui, &palette, Some(Icon::Trash), &delete_chat) {
                         app.actions.push(Action::DjDeleteChat(current));
                     }
                 }
@@ -310,7 +325,7 @@ fn title_row(app: &mut App, ui: &mut Ui) {
 }
 
 /// Today's time, or the day and time.
-fn stamp(seconds: i64) -> Option<String> {
+fn stamp(seconds: i64, locale: Locale) -> Option<String> {
     let zone = jiff::tz::TimeZone::system();
     let at = jiff::Timestamp::from_second(seconds)
         .ok()?
@@ -318,7 +333,8 @@ fn stamp(seconds: i64) -> Option<String> {
     let today = jiff::Timestamp::now().to_zoned(zone);
     let time = at.strftime("%H:%M").to_string();
     Some(if at.date() == today.date() {
-        format!("Today {time}")
+        // Translators: Keep {time} exactly as written. It becomes a clock time, such as 22:14.
+        gettext(locale, "Today {time}").replace("{time}", &time)
     } else {
         format!("{} {time}", at.strftime("%b %-d"))
     })
@@ -327,17 +343,19 @@ fn stamp(seconds: i64) -> Option<String> {
 fn chat(
     ui: &mut Ui,
     palette: &Palette,
+    locale: Locale,
     art: &ArtLoader,
     dj: &crate::dj::Dj,
     asks: &[Ask],
 ) -> Vec<Action> {
     let mut cx = Cx {
         palette: *palette,
+        locale,
         art,
         actions: Vec::new(),
     };
     let width = ui.available_width();
-    if let Some(text) = dj.chat_time().and_then(stamp) {
+    if let Some(text) = dj.chat_time().and_then(|seconds| stamp(seconds, locale)) {
         ui.vertical_centered(|ui| {
             theme::text(ui, text, theme::regular(12.0), palette.dim);
         });
@@ -424,13 +442,28 @@ fn reply_side(
     } else if !rest.is_empty() {
         let id = Id::new(("dj-tools", turn.at));
         let secs = turn.user.map_or(0, |user| user.secs);
+        let count = rest.len();
         let label = if swapped && secs > 0 {
-            format!("Worked for {secs}s \u{b7} {} steps", rest.len())
-        } else if rest.len() == 1 {
-            "Used 1 tool".to_string()
+            ngettext(
+                cx.locale,
+                // Translators: Keep {secs} and {count} exactly as written. They become the seconds
+                // the DJ worked and the number of steps it took.
+                "Worked for {secs}s · {count} step",
+                "Worked for {secs}s · {count} steps",
+                count as u32,
+            )
+            .replace("{secs}", &secs.to_string())
         } else {
-            format!("Used {} tools", rest.len())
-        };
+            ngettext(
+                cx.locale,
+                // Translators: Keep {count} exactly as written. It becomes the number of tools.
+                "Used {count} tool",
+                "Used {count} tools",
+                count as u32,
+            )
+            .into_owned()
+        }
+        .replace("{count}", &count.to_string());
         let open: bool = ui.ctx().data(|data| data.get_temp(id)).unwrap_or(false);
         if fold_header(ui, &palette, &label, open) {
             ui.ctx().data_mut(|data| data.insert_temp(id, !open));
@@ -444,10 +477,11 @@ fn reply_side(
 
     if live && turn.replies.is_empty() && (turn.thought.is_none() || !turn.tools.is_empty()) {
         let phase = match dj.phase {
-            Some("connecting") => "Connecting",
-            _ if turn.tools.is_empty() => "Thinking",
-            _ => "Working",
-        };
+            Some("connecting") => gettext(cx.locale, "Connecting"),
+            _ if turn.tools.is_empty() => gettext(cx.locale, "Thinking"),
+            _ => gettext(cx.locale, "Working"),
+        }
+        .into_owned();
         ui.horizontal(|ui| {
             let (square, _) = ui.allocate_exact_size(vec2(36.0, 36.0), Sense::hover());
             ui.painter()
@@ -481,16 +515,17 @@ fn reply_side(
         for card in turn.tools.iter().filter_map(|l| l.card.as_ref()) {
             match card {
                 Card::Queued { songs, total } => {
-                    let heading =
-                        format!("Queued {total} song{}", if *total == 1 { "" } else { "s" });
+                    // Translators: Keep {songs} exactly as written. It becomes a number of songs,
+                    // such as "48 songs".
+                    let heading = gettext(cx.locale, "Queued {songs}")
+                        .replace("{songs}", &cx.locale.song_count(*total as u32));
                     song_tray(ui, cx, &heading, songs, *total);
                     ui.add_space(8.0);
                 }
                 Card::Removed { songs, total } => {
-                    let heading = format!(
-                        "Took {total} song{} out of the queue",
-                        if *total == 1 { "" } else { "s" }
-                    );
+                    // Translators: Keep {songs} exactly as written. It becomes a number of songs.
+                    let heading = gettext(cx.locale, "Took {songs} out of the queue")
+                        .replace("{songs}", &cx.locale.song_count(*total as u32));
                     song_tray(ui, cx, &heading, songs, *total);
                     ui.add_space(8.0);
                 }
@@ -533,7 +568,7 @@ fn reply_side(
                 16.0,
                 palette.dim,
                 palette.text,
-                "Copy the answer",
+                &gettext(cx.locale, "Copy the answer"),
             );
             if copy.clicked() {
                 let text: Vec<&str> = turn.replies.iter().map(|l| l.text.as_str()).collect();
@@ -547,7 +582,7 @@ fn reply_side(
                     16.0,
                     palette.dim,
                     palette.text,
-                    "Ask again",
+                    &gettext(cx.locale, "Ask again"),
                 )
                 .clicked()
             {
@@ -577,14 +612,21 @@ fn thought_block(ui: &mut Ui, cx: &Cx, at: usize, line: &Line, thinking: bool) {
                 let glow = (t * 3.0).sin() * 0.5 + 0.5;
                 palette.dim.lerp_to_gamma(palette.text, glow * 0.8)
             };
-            theme::text(ui, "Thinking", theme::regular(13.5), color);
+            theme::text(
+                ui,
+                gettext(cx.locale, "Thinking").into_owned(),
+                theme::regular(13.5),
+                color,
+            );
         });
         if !motion::reduced(ui.ctx()) {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(33));
         }
     } else {
-        let label = format!("Thought for {}s", line.secs.max(1));
+        // Translators: Keep {secs} exactly as written. It becomes the seconds the DJ thought.
+        let label = gettext(cx.locale, "Thought for {secs}s")
+            .replace("{secs}", &line.secs.max(1).to_string());
         if fold_header(ui, &palette, &label, open) {
             ui.ctx().data_mut(|data| data.insert_temp(id, !open));
         }
@@ -837,7 +879,9 @@ fn song_rows(ui: &mut Ui, cx: &Cx, songs: &[CardSong], total: usize) {
             ui.add_space(18.0);
             theme::text(
                 ui,
-                format!("+{more} more"),
+                // Translators: Keep {count} exactly as written. It becomes the number of songs
+                // a list does not show.
+                gettext(cx.locale, "+{count} more").replace("{count}", &more.to_string()),
                 theme::regular(13.0),
                 palette.dim,
             );
@@ -874,7 +918,13 @@ fn swap_tray(ui: &mut Ui, cx: &Cx, out: &[&Card], inn: &[&Card]) {
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
             ui.set_width(width - 32.0);
-            for (label, cards, gone) in [("Out", out, true), ("In", inn, false)] {
+            let labels = [
+                // Translators: Label of the songs the DJ took out of the queue.
+                pgettext(cx.locale, "queue swap", "Out"),
+                // Translators: Label of the songs the DJ put into the queue.
+                pgettext(cx.locale, "queue swap", "In"),
+            ];
+            for (label, cards, gone) in [(&labels[0], out, true), (&labels[1], inn, false)] {
                 let (songs, total) = pick(cards);
                 let (rect, _) =
                     ui.allocate_exact_size(vec2(ui.available_width(), 82.0), Sense::hover());
@@ -951,13 +1001,16 @@ fn playlist_card(
 ) {
     let palette = cx.palette;
     let label = if created {
-        format!("Created {name}")
+        // Translators: Keep {name} exactly as written. It becomes the name of a playlist.
+        gettext(cx.locale, "Created {name}").replace("{name}", name)
     } else {
-        format!(
-            "Added {total} song{} to {name}",
-            if total == 1 { "" } else { "s" }
-        )
+        // Translators: Keep {songs} and {name} exactly as written. They become a number of songs
+        // and the name of a playlist.
+        gettext(cx.locale, "Added {songs} to {name}")
+            .replace("{songs}", &cx.locale.song_count(total as u32))
+            .replace("{name}", name)
     };
+    let open_label = gettext(cx.locale, "Open");
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
     ui.painter().rect_stroke(
         rect,
@@ -985,7 +1038,9 @@ fn playlist_card(
         pos2(rect.right() - 6.0, rect.bottom()),
     );
     let response = ui.interact(open, ui.id().with(("dj-open", uri)), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open"));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, open_label.as_ref())
+    });
     theme::focus_ring(ui, &response);
     let color = if response.hovered() {
         palette.text
@@ -995,7 +1050,7 @@ fn playlist_card(
     ui.painter().text(
         open.center(),
         Align2::CENTER_CENTER,
-        "Open",
+        open_label.as_ref(),
         theme::regular(13.0),
         color,
     );
@@ -1012,6 +1067,7 @@ fn playlist_card(
 /// A change the DJ asked for: what it is, and the listener's yes or no.
 fn ask_card(ui: &mut Ui, cx: &mut Cx, ask: &Ask) {
     let palette = cx.palette;
+    let cancel = gettext(cx.locale, "Cancel");
     Frame::new()
         .fill(palette.surface)
         .stroke(Stroke::new(1.2, palette.accent))
@@ -1047,10 +1103,10 @@ fn ask_card(ui: &mut Ui, cx: &mut Cx, ask: &Ask) {
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if theme::pill_button(ui, &palette, ask.confirm, true).clicked() {
+                    if theme::pill_button(ui, &palette, &ask.confirm, true).clicked() {
                         cx.actions.push(Action::DjApprove(ask.id));
                     }
-                    if theme::pill_button(ui, &palette, "Cancel", false).clicked() {
+                    if theme::pill_button(ui, &palette, &cancel, false).clicked() {
                         cx.actions.push(Action::DjDeny(ask.id));
                     }
                 });
@@ -1077,6 +1133,9 @@ fn composer(app: &mut App, ui: &mut Ui, usable: bool) {
         clip.bottom() - COMPOSER_H - 18.0,
     );
     let busy = app.dj.busy;
+    let locale = app.locale;
+    let new_chat = gettext(locale, "New chat");
+    let hint = gettext(locale, "Tell the DJ what you want");
     let input_id = Id::new("dj-input");
     let mut changed = false;
     egui::Area::new(Id::new("dj-composer"))
@@ -1106,7 +1165,7 @@ fn composer(app: &mut App, ui: &mut Ui, usable: bool) {
                                 palette.surface_hover,
                                 palette.surface_active,
                                 palette.secondary,
-                                "New chat",
+                                &new_chat,
                             )
                             .clicked()
                             {
@@ -1119,10 +1178,7 @@ fn composer(app: &mut App, ui: &mut Ui, usable: bool) {
                             vec2(edit_width, 38.0),
                             egui::TextEdit::singleline(&mut app.dj.input)
                                 .id(input_id)
-                                .hint_text(
-                                    egui::RichText::new("Tell the DJ what you want")
-                                        .color(palette.dim),
-                                )
+                                .hint_text(egui::RichText::new(hint.as_ref()).color(palette.dim))
                                 .font(theme::regular(14.5))
                                 .text_color(palette.text)
                                 .frame(egui::Frame::NONE)
@@ -1131,10 +1187,12 @@ fn composer(app: &mut App, ui: &mut Ui, usable: bool) {
                         );
                         let entered =
                             response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        changed |= model_pill(ui, &mut app.settings.dj_model, &palette);
-                        changed |= effort_button(ui, &mut app.settings.dj_effort, &palette);
+                        changed |= model_pill(ui, &mut app.settings.dj_model, &palette, locale);
+                        changed |= effort_button(ui, &mut app.settings.dj_effort, &palette, locale);
                         let can_send = usable && !busy && !app.dj.input.trim().is_empty();
-                        if send_button(ui, &palette, busy, can_send) || (entered && can_send) {
+                        if send_button(ui, &palette, locale, busy, can_send)
+                            || (entered && can_send)
+                        {
                             if busy {
                                 app.actions.push(Action::DjCancel);
                             } else if can_send {
@@ -1151,9 +1209,11 @@ fn composer(app: &mut App, ui: &mut Ui, usable: bool) {
 }
 
 /// The provider and model: "Claude" with its mark, a menu of models.
-fn model_pill(ui: &mut Ui, model: &mut String, palette: &Palette) -> bool {
+fn model_pill(ui: &mut Ui, model: &mut String, palette: &Palette, locale: Locale) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(112.0, 38.0), Sense::click());
-    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Model"));
+    let label = gettext(locale, "Model");
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.as_ref()));
     let fill = if response.hovered() {
         palette.surface_active
     } else {
@@ -1190,8 +1250,10 @@ fn model_pill(ui: &mut Ui, model: &mut String, palette: &Palette) -> bool {
 }
 
 /// The brain: how hard the model thinks, a menu of efforts.
-fn effort_button(ui: &mut Ui, effort: &mut String, palette: &Palette) -> bool {
-    let tip = format!("Thinking effort: {effort}");
+fn effort_button(ui: &mut Ui, effort: &mut String, palette: &Palette, locale: Locale) -> bool {
+    // Translators: Keep {effort} exactly as written. It becomes how hard the model thinks
+    // (low, medium, high).
+    let tip = gettext(locale, "Thinking effort: {effort}").replace("{effort}", effort);
     let response = theme::circle_button(
         ui,
         Icon::Brain,
@@ -1223,15 +1285,15 @@ fn effort_button(ui: &mut Ui, effort: &mut String, palette: &Palette) -> bool {
 }
 
 /// The white disc: an arrow to send, a square to stop.
-fn send_button(ui: &mut Ui, palette: &Palette, busy: bool, can_send: bool) -> bool {
+fn send_button(ui: &mut Ui, palette: &Palette, locale: Locale, busy: bool, can_send: bool) -> bool {
     let (rect, response) = ui.allocate_exact_size(vec2(42.0, 42.0), Sense::click());
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            true,
-            if busy { "Stop" } else { "Send" },
-        )
-    });
+    let label = if busy {
+        gettext(locale, "Stop")
+    } else {
+        gettext(locale, "Send")
+    };
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label.as_ref()));
     let live = busy || can_send;
     let fill = if live {
         if response.hovered() {
@@ -1265,75 +1327,82 @@ fn send_button(ui: &mut Ui, palette: &Palette, busy: bool, can_send: bool) -> bo
 /// The DJ's section of the settings page. Returns whether a setting changed.
 pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
     let palette = app.palette;
+    let locale = app.locale;
     let mut changed = false;
+    let title = gettext(locale, "AI DJ");
     widgets::setting_row(
         ui,
         &palette,
-        "AI DJ",
-        "Show the DJ in the sidebar. It runs the Claude Code CLI you are signed in to; Spotifast never sees your Claude login.",
+        &title,
+        &gettext(
+            locale,
+            "Show the DJ in the sidebar. It runs the Claude Code CLI you are signed in to; Spotifast never sees your Claude login.",
+        ),
         |ui| {
-            if widgets::switch(ui, &palette, "AI DJ", &mut app.settings.dj_enabled).changed() {
+            if widgets::switch(ui, &palette, &title, &mut app.settings.dj_enabled).changed() {
                 changed = true;
             }
         },
     );
+    let title = gettext(locale, "Ask before changing my library");
     widgets::setting_row(
         ui,
         &palette,
-        "Ask before changing my library",
-        "The DJ asks you to approve each like or playlist change before it happens. Removing songs, renaming and anything the DJ does on its own always ask, and so do notes and scheduled tasks.",
+        &title,
+        &gettext(
+            locale,
+            "The DJ asks you to approve each like or playlist change before it happens. Removing songs, renaming and anything the DJ does on its own always ask, and so do notes and scheduled tasks.",
+        ),
         |ui| {
-            if widgets::switch(
-                ui,
-                &palette,
-                "Ask before changing my library",
-                &mut app.settings.dj_confirm_writes,
-            )
-            .changed()
+            if widgets::switch(ui, &palette, &title, &mut app.settings.dj_confirm_writes).changed()
             {
                 changed = true;
             }
         },
     );
+    let title = gettext(locale, "Let the DJ search the web");
     widgets::setting_row(
         ui,
         &palette,
-        "Let the DJ search the web",
-        "Lets the DJ use Claude Code's own web search to look up music facts. The search words it chooses go to Claude's search; it cannot open pages.",
+        &title,
+        &gettext(
+            locale,
+            "Lets the DJ use Claude Code's own web search to look up music facts. The search words it chooses go to Claude's search; it cannot open pages.",
+        ),
         |ui| {
-            if widgets::switch(
-                ui,
-                &palette,
-                "Let the DJ search the web",
-                &mut app.settings.dj_web,
-            )
-            .changed()
-            {
+            if widgets::switch(ui, &palette, &title, &mut app.settings.dj_web).changed() {
                 changed = true;
             }
         },
     );
+    let title = gettext(locale, "Autopilot");
     widgets::setting_row(
         ui,
         &palette,
-        "Autopilot",
-        "While Spotifast is open, the DJ tops up the queue when it runs low and reacts to skips. It uses your Claude plan.",
+        &title,
+        &gettext(
+            locale,
+            "While Spotifast is open, the DJ tops up the queue when it runs low and reacts to skips. It uses your Claude plan.",
+        ),
         |ui| {
-            if widgets::switch(ui, &palette, "Autopilot", &mut app.settings.dj_autopilot).changed()
-            {
+            if widgets::switch(ui, &palette, &title, &mut app.settings.dj_autopilot).changed() {
                 changed = true;
             }
         },
     );
+    let same = gettext(locale, "Same as the DJ model");
     widgets::setting_row(
         ui,
         &palette,
-        "Background model",
-        "The model for the DJ's own turns (autopilot, scheduled tasks). A smaller one costs less of your plan.",
+        &gettext(locale, "Background model"),
+        &gettext(
+            locale,
+            "The model for the DJ's own turns (autopilot, scheduled tasks). A smaller one costs less of your plan.",
+        ),
         |ui| {
             let current = app.settings.dj_background_model.clone();
             let shown = if current.is_empty() {
-                "Same as the DJ model".to_string()
+                same.to_string()
             } else {
                 crate::dj::models()
                     .into_iter()
@@ -1345,7 +1414,7 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
                 .width(200.0_f32.min(ui.available_width()))
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(current.is_empty(), "Same as the DJ model")
+                        .selectable_label(current.is_empty(), same.as_ref())
                         .clicked()
                         && !current.is_empty()
                     {
@@ -1368,8 +1437,8 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
     widgets::setting_row(
         ui,
         &palette,
-        "DJ model",
-        "Which Claude model the DJ asks for.",
+        &gettext(locale, "DJ model"),
+        &gettext(locale, "Which Claude model the DJ asks for."),
         |ui| {
             let current = app.settings.dj_model.clone();
             let shown = crate::dj::models()
@@ -1396,8 +1465,11 @@ pub fn settings(app: &mut App, ui: &mut egui::Ui) -> bool {
     widgets::setting_row(
         ui,
         &palette,
-        "DJ effort",
-        "How hard the model thinks before it answers. Lower is faster and uses less of your plan.",
+        &gettext(locale, "DJ effort"),
+        &gettext(
+            locale,
+            "How hard the model thinks before it answers. Lower is faster and uses less of your plan.",
+        ),
         |ui| {
             let current = app.settings.dj_effort.clone();
             egui::ComboBox::from_id_salt("dj_effort")
