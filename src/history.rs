@@ -41,14 +41,11 @@ pub struct History {
 }
 
 impl History {
-    /// Reads the history, or returns an empty history if the file is unreadable.
+    /// Reads the history. An unreadable file is set aside as
+    /// `<name>.corrupt-<time>` and the history starts empty.
     pub fn load(path: &Path) -> Self {
-        let plays = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str::<Vec<PlayHistory>>(&text).ok())
-            .unwrap_or_default();
         Self {
-            plays,
+            plays: crate::settings::load_json(path),
             ..Self::default()
         }
     }

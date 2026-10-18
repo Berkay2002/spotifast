@@ -33,6 +33,10 @@ Spotifast follows each platform's conventions. On Linux:
 | Last run's log | `~/.local/state/spotifast/spotifast.log` | Always |
 | Crash log | `~/.local/state/spotifast/panic.log` | Always |
 
+When the settings, session or history file cannot be read (a typo from a
+hand edit, for example), Spotifast starts from the defaults and keeps the
+file beside it as `<name>.corrupt-<time>`, so you can fix it and put it back.
+
 Clearing caches never signs you out. Sign-out from Settings covers the shared
 and personal Web API grants and the independent playback credential. It also
 removes the cached library of every account: playlist pages, the playlist
