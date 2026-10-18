@@ -4058,13 +4058,16 @@ impl App {
 
     /// One line for the control channel's `nowplaying` verb: tab-separated
     /// `state, title, artists, album, position_ms, duration_ms, volume,
-    /// shuffle, repeat, art_url, saved, device`, or
+    /// shuffle, repeat, art_url, saved, device, kind, uri`, or
     /// [`crate::single_instance::NOTHING_PLAYING`].
     ///
-    /// The last three are what a Stream Deck key needs and a media key does
-    /// not: something to draw, whether the heart is filled, and where the
-    /// sound is coming out. They are appended rather than woven in, so a
-    /// script written against the older nine fields still reads correctly.
+    /// `art_url, saved, device` are what a Stream Deck key needs and a media
+    /// key does not: something to draw, whether the heart is filled, and
+    /// where the sound is coming out. `kind` (`track`, `episode`, `local` or
+    /// `other`) and `uri` let a client that shares listening activity tell a
+    /// song from a podcast or a local file. Fields are appended rather than
+    /// woven in, so a script written against an older count still reads
+    /// correctly.
     fn control_snapshot(&self) -> String {
         let Some(now) = self.now_playing() else {
             return crate::single_instance::NOTHING_PLAYING.to_owned();
@@ -4085,6 +4088,12 @@ impl App {
             (None, true) => self.settings.device_name.as_str(),
             (None, false) => "",
         };
+        let kind = match now.uri.split(':').nth(1) {
+            Some("track") => "track",
+            Some("episode") => "episode",
+            Some("local") => "local",
+            _ => "other",
+        };
         // Tabs separate the fields, so a tab inside one would shift the rest.
         // This runs every frame, and titles almost never contain one, so the
         // usual answer borrows rather than allocating a copy per field.
@@ -4095,7 +4104,7 @@ impl App {
             }
         }
         format!(
-            "{state}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{saved}\t{}",
+            "{state}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{saved}\t{}\t{kind}\t{}",
             clean(&now.title),
             clean(&now.subtitle),
             clean(&now.album_name),
@@ -4106,6 +4115,7 @@ impl App {
             now.repeat.api_name(),
             clean(now.art_url.as_deref().unwrap_or_default()),
             clean(device),
+            clean(&now.uri),
         )
     }
 
@@ -26388,6 +26398,10 @@ mod tests {
                 // Local playback is this computer, which Spotify has not
                 // named because it is not a remote device.
                 "Spotifast",
+                // What is playing, so a client can tell a song from a
+                // podcast or a local file.
+                "track",
+                "spotify:track:t1",
             ]
         );
         // No devices seen yet is an empty array, not an empty string, so a

@@ -153,7 +153,7 @@ enum Control {
     NowPlaying {
         /// Print the fields tab-separated instead: state, title, artists,
         /// album, position_ms, duration_ms, volume, shuffle, repeat,
-        /// art_url, saved, device.
+        /// art_url, saved, device, kind, uri.
         #[arg(long)]
         raw: bool,
     },

@@ -299,8 +299,9 @@ a message instead when nothing matches.
 
 `now-playing` prints one readable line. `--raw` prints tab-separated fields:
 state, title, artists, album, position_ms, duration_ms, volume, shuffle,
-repeat, art_url, saved, and device. `saved` is `yes`, `no`, or `unknown` while
-loading. New fields are appended to keep older scripts working.
+repeat, art_url, saved, device, kind, and uri. `saved` is `yes`, `no`, or
+`unknown` while loading. `kind` is `track`, `episode`, `local`, or `other`, and
+`uri` is the playing item's `spotify:` URI. New fields are appended to keep older scripts working.
 
 `devices` lists Spotify Connect devices with the ID first and the active one
 marked with `*`. `--raw` prints JSON. The command refreshes the device list,
