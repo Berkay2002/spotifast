@@ -9,6 +9,7 @@ use super::tools::{Cadence, Slot};
 use crate::i18n::{Locale, gettext};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const NOTES_MAX: usize = 40;
@@ -24,13 +25,18 @@ const EVENTS_MAX: usize = 8;
 pub const CHATS_MAX: usize = 30;
 pub const CHAT_LINES_MAX: usize = 200;
 
-fn save<T: Serialize>(path: &Path, value: &T) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
+/// Where one of the DJ's files lives, and the app's writer, which replaces it whole and durably on
+/// a thread of its own: a save never makes the UI thread wait for the disk.
+pub type File = (PathBuf, Arc<fastframe_file::Writer>);
+
+fn save<T: Serialize>(file: &Option<File>, value: &T) {
+    let Some((path, files)) = file else {
+        return;
+    };
+    match serde_json::to_vec_pretty(value) {
+        Ok(bytes) => files.write(path, bytes, fastframe_file::Access::Default),
+        Err(error) => log::warn!("could not encode {}: {error}", path.display()),
     }
-    let temporary = path.with_extension("json.tmp");
-    std::fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    std::fs::rename(&temporary, path)
 }
 
 /// A missing file is empty. A file that cannot be read back is set aside as `<name>.corrupt-<time>`
@@ -58,13 +64,13 @@ fn load<T: DeserializeOwned + Default>(path: &Path) -> T {
 pub struct Memory {
     notes: Vec<String>,
     #[serde(skip)]
-    path: Option<PathBuf>,
+    file: Option<File>,
 }
 
 impl Memory {
-    pub fn open(path: PathBuf) -> Self {
-        let mut memory: Memory = load(&path);
-        memory.path = Some(path);
+    pub fn open(file: File) -> Self {
+        let mut memory: Memory = load(&file.0);
+        memory.file = Some(file);
         memory
     }
 
@@ -73,9 +79,7 @@ impl Memory {
     }
 
     fn persist(&self) {
-        if let Some(path) = &self.path {
-            let _ = save(path, self);
-        }
+        save(&self.file, self);
     }
 
     pub fn remember(&mut self, note: &str) -> Result<(), String> {
@@ -167,13 +171,13 @@ pub struct Schedules {
     tasks: Vec<Task>,
     next_id: u32,
     #[serde(skip)]
-    path: Option<PathBuf>,
+    file: Option<File>,
 }
 
 impl Schedules {
-    pub fn open(path: PathBuf) -> Self {
-        let mut schedules: Schedules = load(&path);
-        schedules.path = Some(path);
+    pub fn open(file: File) -> Self {
+        let mut schedules: Schedules = load(&file.0);
+        schedules.file = Some(file);
         schedules
     }
 
@@ -182,9 +186,7 @@ impl Schedules {
     }
 
     fn persist(&self) {
-        if let Some(path) = &self.path {
-            let _ = save(path, self);
-        }
+        save(&self.file, self);
     }
 
     pub fn add(&mut self, slot: Slot, prompt: &str) -> Result<u32, String> {
@@ -432,13 +434,13 @@ impl Chat {
 pub struct Chats {
     chats: Vec<Chat>,
     #[serde(skip)]
-    path: Option<PathBuf>,
+    file: Option<File>,
 }
 
 impl Chats {
-    pub fn open(path: PathBuf) -> Self {
-        let mut chats: Chats = load(&path);
-        chats.path = Some(path);
+    pub fn open(file: File) -> Self {
+        let mut chats: Chats = load(&file.0);
+        chats.file = Some(file);
         chats
     }
 
@@ -490,16 +492,12 @@ impl Chats {
             },
         );
         self.chats.truncate(CHATS_MAX);
-        if let Some(path) = &self.path {
-            let _ = save(path, self);
-        }
+        save(&self.file, self);
     }
 
     pub fn delete(&mut self, id: u64) {
         self.chats.retain(|c| c.id != id);
-        if let Some(path) = &self.path {
-            let _ = save(path, self);
-        }
+        save(&self.file, self);
     }
 }
 
@@ -554,11 +552,14 @@ mod tests {
     fn notes_survive_a_restart_and_a_damaged_file_is_empty() {
         let dir = std::env::temp_dir().join(format!("spotifast-dj-mem-{}", std::process::id()));
         let path = dir.join("dj-memory.json");
-        let mut m = Memory::open(path.clone());
+        let files = Arc::new(fastframe_file::Writer::new());
+        let file = || (path.clone(), files.clone());
+        let mut m = Memory::open(file());
         m.remember("no country").unwrap();
-        assert_eq!(Memory::open(path.clone()).notes(), ["no country"]);
+        assert!(files.flush(fastframe_file::FLUSH_TIMEOUT));
+        assert_eq!(Memory::open(file()).notes(), ["no country"]);
         std::fs::write(&path, b"{ nope").unwrap();
-        assert!(Memory::open(path.clone()).notes().is_empty());
+        assert!(Memory::open(file()).notes().is_empty());
         // the damaged file is kept beside it, not overwritten by the next save
         assert!(!path.exists());
         let kept: Vec<_> = std::fs::read_dir(&dir)
@@ -569,6 +570,36 @@ mod tests {
         assert_eq!(kept.len(), 1);
         assert_eq!(std::fs::read(kept[0].path()).unwrap(), b"{ nope");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saves_are_handed_to_the_writer_and_never_wait_for_the_disk_here() {
+        let here = std::thread::current().id();
+        let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = written.clone();
+        let files = Arc::new(fastframe_file::Writer::with_write(move |path, bytes, _| {
+            let notes: Memory = serde_json::from_slice(bytes).unwrap();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let on = std::thread::current().id();
+            seen.lock().unwrap().push((name, notes.notes, on));
+            Ok(())
+        }));
+        let path = std::env::temp_dir()
+            .join("spotifast-dj-never-written")
+            .join("dj-memory.json");
+        let mut m = Memory::open((path.clone(), files.clone()));
+        m.remember("no country").unwrap();
+        m.forget("country");
+        assert!(files.flush(fastframe_file::FLUSH_TIMEOUT));
+        let written = written.lock().unwrap();
+        assert!(!written.is_empty());
+        assert!(
+            written
+                .iter()
+                .all(|(name, _, on)| name == "dj-memory.json" && *on != here)
+        );
+        assert!(written.last().unwrap().1.is_empty());
+        assert!(!path.exists());
     }
 
     #[test]

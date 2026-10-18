@@ -127,7 +127,7 @@ pub struct Dj {
     /// The turn in flight is the DJ's own (an event or a schedule), not an answer to a message.
     background: bool,
     /// Where the DJ keeps its files, and the account they are open for.
-    dir: Option<std::path::PathBuf>,
+    dir: Option<(std::path::PathBuf, Arc<fastframe_file::Writer>)>,
     account: Option<String>,
     /// Stop was pressed: calls still arriving for the turn are refused, not run.
     stopping: bool,
@@ -222,8 +222,9 @@ impl Dj {
 
     /// Where the DJ keeps its files. What it kept is opened per account (`set_account`), so
     /// another account on this machine does not inherit its notes, schedules and chats.
-    pub fn attach(&mut self, dir: &Path) {
-        self.dir = Some(dir.to_path_buf());
+    /// They are written through `files`, the app's writer, off the UI thread.
+    pub fn attach(&mut self, dir: &Path, files: Arc<fastframe_file::Writer>) {
+        self.dir = Some((dir.to_path_buf(), files));
     }
 
     /// Opens the notes, schedules and saved chats of the signed-in account. The newest chat is
@@ -233,7 +234,7 @@ impl Dj {
         if self.account.as_deref() == Some(id) {
             return;
         }
-        let Some(dir) = self.dir.clone() else {
+        let Some((dir, files)) = self.dir.clone() else {
             return;
         };
         // Spotify's ids are plain letters and digits; anything else cannot reach a file name
@@ -253,7 +254,7 @@ impl Dj {
             if !mine.exists() && old.exists() {
                 let _ = std::fs::rename(&old, &mine);
             }
-            mine
+            (mine, files.clone())
         };
         self.memory = Memory::open(file("dj-memory"));
         self.schedules = Schedules::open(file("dj-schedules"));
@@ -1120,13 +1121,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("dj-memory.json"), br#"{"notes":["no country"]}"#).unwrap();
         let (mut dj, _) = dj_with(Vec::new(), ok_status());
-        dj.attach(&dir);
+        let files = Arc::new(fastframe_file::Writer::new());
+        dj.attach(&dir, files.clone());
         dj.set_account("alice");
         assert_eq!(dj.memory.notes(), ["no country"]);
         assert!(!dir.join("dj-memory.json").exists());
         dj.set_account("bob");
         assert!(dj.memory.notes().is_empty());
         dj.memory.remember("likes jazz").unwrap();
+        assert!(files.flush(fastframe_file::FLUSH_TIMEOUT));
         dj.set_account("alice");
         assert_eq!(dj.memory.notes(), ["no country"]);
         dj.set_account("bob");

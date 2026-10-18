@@ -420,8 +420,8 @@ pub struct App {
     pub home: HomeData,
     /// Local play history. See [`crate::history`].
     pub plays: crate::history::History,
-    /// Writes settings, session and history off the UI thread.
-    files: fastframe_file::Writer,
+    /// Writes settings, session, history and the DJ's files off the UI thread.
+    files: std::sync::Arc<fastframe_file::Writer>,
     /// Current track timing used to decide when a play counts.
     listening: Option<Listening>,
     pub recents: crate::model::CursorList<crate::api::models::PlayHistory>,
@@ -975,7 +975,7 @@ impl App {
             liked_recheck_at: None,
             home: HomeData::default(),
             plays,
-            files: fastframe_file::Writer::new(),
+            files: std::sync::Arc::new(fastframe_file::Writer::new()),
             listening: None,
             recents: crate::model::CursorList::default(),
             recents_view: Vec::new(),
@@ -1131,7 +1131,7 @@ impl App {
             pixels_per_point: 1.0,
         };
         app.local.volume = app.settings.volume;
-        app.dj.attach(&app.dirs.config);
+        app.dj.attach(&app.dirs.config, app.files.clone());
         // What was played here is on disk and needs nothing from the
         // network, so the tab has rows before Spotify has answered.
         app.rebuild_recents();
