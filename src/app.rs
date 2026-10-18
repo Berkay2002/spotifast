@@ -3914,17 +3914,39 @@ impl App {
                     MediaRepeat::Track => RepeatMode::Track,
                     MediaRepeat::Playlist => RepeatMode::Context,
                 })),
-                MediaCommand::OpenUri(uri) => {
-                    if crate::link::search_query(&uri).is_some() {
-                        crate::link::parse(&uri).map(Action::OpenLink)
-                    } else {
+                // Web addresses and `spotify://` links play as the URI they
+                // stand for. A `spotify:` context the link parser does not
+                // know (the collection, a station) still plays as given.
+                MediaCommand::OpenUri(uri) => match crate::link::parse(&uri) {
+                    Some(link)
+                        if link.starts_with("spotify:search:")
+                            || link.starts_with("spotify:prerelease:") =>
+                    {
+                        Some(Action::OpenLink(link))
+                    }
+                    Some(link)
+                        if link.starts_with("spotify:track:")
+                            || link.starts_with("spotify:episode:") =>
+                    {
+                        Some(Action::PlayUris {
+                            uris: vec![link],
+                            index: 0,
+                        })
+                    }
+                    Some(link) => Some(Action::PlayContext {
+                        uri: link,
+                        offset_uri: None,
+                        offset_index: None,
+                    }),
+                    None if uri.starts_with("spotify:") && !uri.starts_with("spotify://") => {
                         Some(Action::PlayContext {
                             uri,
                             offset_uri: None,
                             offset_index: None,
                         })
                     }
-                }
+                    None => None,
+                },
                 MediaCommand::Raise => Some(Action::ShowWindow),
                 MediaCommand::Quit => Some(Action::Quit),
             };
@@ -27185,6 +27207,20 @@ mod tests {
         wait_for_command(&mut app);
         assert!(
             matches!(app.actions.as_slice(), [Action::PlayContext { uri, offset_uri: None, offset_index: None }] if uri == "spotify:playlist:unchanged")
+        );
+
+        // Web and spotify:// links play as the URI they stand for.
+        app.actions.clear();
+        call("https://open.spotify.com/intl-de/album/abc123?si=x").unwrap();
+        wait_for_command(&mut app);
+        assert!(
+            matches!(app.actions.as_slice(), [Action::PlayContext { uri, offset_uri: None, offset_index: None }] if uri == "spotify:album:abc123")
+        );
+        app.actions.clear();
+        call("spotify://track/t1").unwrap();
+        wait_for_command(&mut app);
+        assert!(
+            matches!(app.actions.as_slice(), [Action::PlayUris { uris, index: 0 }] if uris == &["spotify:track:t1"])
         );
     }
 
