@@ -97,8 +97,9 @@ is kept beside it as `<name>.corrupt-<time>` instead of being overwritten.
 **Autopilot** (off by default) lets the DJ act without a message from you
 while Spotifast is open: it tops up a queue that runs low and reacts when
 you skip two songs in a row. It runs at most once a minute and can use a
-smaller **Background model** to spare your plan. It never saves notes or
-schedules on its own, and its library changes still wait for you.
+smaller **Background model** to spare your plan. It never saves, forgets or
+cancels notes or schedules on its own, and its library changes still wait
+for you.
 
 ## The web
 

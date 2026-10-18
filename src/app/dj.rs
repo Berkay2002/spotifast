@@ -268,12 +268,9 @@ impl App {
 
     fn dj_call(&mut self, pending: PendingCall) {
         let PendingCall { call, reply } = pending;
-        // What lasts (a note, a scheduled task) is never made by a turn nobody is watching: text
-        // from a web page or a playlist name could have steered it.
-        if self.dj.unprompted() && matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. })
-        {
+        if self.dj.unprompted() && refused_unprompted(&call) {
             let _ = reply.send(Err(
-                "Notes and schedules are only saved when the listener asks for them in a message."
+                "Notes and schedules are only changed when the listener asks for it in a message."
                     .to_string(),
             ));
             return;
@@ -1725,6 +1722,19 @@ impl App {
     }
 }
 
+/// Whether a turn nobody is watching is refused the call outright. What lasts (a note, a scheduled
+/// task) is never made or taken away by one: text from a web page or a playlist name could have
+/// steered it, and forgetting matches notes by substring, so one letter could clear them all.
+fn refused_unprompted(call: &Call) -> bool {
+    matches!(
+        call,
+        Call::Remember { .. }
+            | Call::ScheduleTask { .. }
+            | Call::Forget { .. }
+            | Call::CancelSchedule { .. }
+    )
+}
+
 /// Whether a call waits for the listener's yes. The library gate ("Ask before changing my
 /// library") covers every write; the rest are asked about whatever it says: what lasts (a note, a
 /// schedule), what takes something away (there is no undo), and everything done in a turn nobody
@@ -1754,6 +1764,21 @@ mod tests {
         assert!(needs_asking(&like(), false, true));
         // reads never ask
         assert!(!needs_asking(&Call::Skip, true, true));
+    }
+
+    #[test]
+    fn the_djs_own_turns_can_neither_change_notes_nor_schedules() {
+        for call in [
+            Call::Remember { note: "x".into() },
+            Call::Forget { note: "e".into() },
+            Call::CancelSchedule { id: 1 },
+        ] {
+            assert!(refused_unprompted(&call), "{call:?}");
+        }
+        // reading them and every other call fall through to the usual rules
+        for call in [Call::Memory, Call::ListSchedules, Call::Skip, like()] {
+            assert!(!refused_unprompted(&call), "{call:?}");
+        }
     }
 
     #[test]
