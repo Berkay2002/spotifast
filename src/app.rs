@@ -2595,6 +2595,11 @@ impl App {
         self.track_used.clear();
         self.copied_songs.clear();
         self.pending_pastes.clear();
+        // Spotify's play history is the account's; a page still on its way
+        // belongs to the old one. Local plays stay.
+        self.recents.reset();
+        self.recents_generation = self.recents_generation.wrapping_add(1);
+        self.rebuild_recents();
     }
 
     /// Drop table-row caches whose pages are gone, and cap what remains.
@@ -19103,6 +19108,38 @@ mod tests {
             uris,
             vec!["spotify:track:a", "spotify:track:b", "spotify:track:c"]
         );
+    }
+
+    /// Another account signing in never sees the last one's Spotify
+    /// history, even from a page that was still on its way.
+    #[test]
+    fn recents_do_not_follow_an_account_switch() {
+        let mut app = test_app("recents-account-switch");
+        app.absorb_recents(
+            history(
+                vec![play("spotify:track:alice", "2026-09-01T10:00:00Z")],
+                None,
+            ),
+            50,
+        );
+        assert_eq!(app.recents_view.len(), 1);
+        let in_flight = app.recents_generation;
+        app.handle_auth(AuthStatus::SignedOut);
+        app.handle_auth(AuthStatus::Connected {
+            username: "bob".into(),
+        });
+        assert!(app.recents.items.is_empty() && !app.recents.complete);
+        assert!(app.recents_view.is_empty());
+        app.handle_api(ApiResponse::RecentlyPlayed {
+            who: RecentsFor::Panel,
+            generation: in_flight,
+            limit: 50,
+            result: Ok(history(
+                vec![play("spotify:track:alice-late", "2026-09-01T11:00:00Z")],
+                None,
+            )),
+        });
+        assert!(app.recents_view.is_empty());
     }
 
     /// A short page ends history pagination, even with a cursor.
