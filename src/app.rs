@@ -579,7 +579,9 @@ pub struct App {
     last_now_playing_sequence: u64,
     /// A requested start whose effect on the manual queue is already applied.
     /// Context loads keep it; explicit skips consume their rows immediately.
-    queue_start_pending: Option<Target>,
+    /// It counts only for a track change within `PLAYBACK_HOLD`, so a start
+    /// that never changes the track cannot swallow a later queued advance.
+    queue_start_pending: Option<(Target, Instant)>,
     pub playlist_busy: bool,
     pub quit_requested: bool,
     /// Wheel step, Linux touchpad scale and glide, and the axis a gesture
@@ -3050,8 +3052,10 @@ impl App {
         }
         // A new track is a new resume point.
         self.session_dirty = true;
-        let queue_already_updated =
-            self.queue_start_pending.take().as_ref() == Some(&self.target());
+        let queue_already_updated = self
+            .queue_start_pending
+            .take()
+            .is_some_and(|(target, at)| target == self.target() && at.elapsed() < PLAYBACK_HOLD);
         let repeating = same_uri && new_occurrence && now.repeat == RepeatMode::Track;
         // Restore the saved queue only when the remembered track resumes.
         if !self.resume_queue.is_empty() {
@@ -5209,7 +5213,7 @@ impl App {
             }
         }
         self.expect_track(uri.clone(), 0);
-        self.queue_start_pending = Some(self.target());
+        self.queue_start_pending = Some((self.target(), Instant::now()));
         self.set_play_pending(vec![uri]);
         self.optimistic_playing = Some((true, Instant::now()));
         match self.target() {
@@ -5456,7 +5460,7 @@ impl App {
             self.track_cache.entry(id.to_owned()).or_insert(track);
         }
         self.consume_manual_queue_head(&uri);
-        self.queue_start_pending = Some(self.target());
+        self.queue_start_pending = Some((self.target(), Instant::now()));
         self.expect_track(uri, 0);
     }
 
@@ -7378,10 +7382,14 @@ impl App {
                         if matches!(
                             action,
                             RemoteAction::Play | RemoteAction::Next | RemoteAction::Previous
-                        ) && self.intent_track.as_ref().is_some_and(|intent| {
-                            matches!(intent.confirmation, TrackConfirmation::Remote { .. })
-                        }) {
-                            self.intent_track = None;
+                        ) {
+                            // The start failed, so no later track change is its.
+                            self.queue_start_pending = None;
+                            if self.intent_track.as_ref().is_some_and(|intent| {
+                                matches!(intent.confirmation, TrackConfirmation::Remote { .. })
+                            }) {
+                                self.intent_track = None;
+                            }
                         }
                         let hint = if error.status() == Some(404) {
                             format!(
@@ -8129,7 +8137,7 @@ impl App {
             shuffle: shuffle.then_some(true),
             at: Instant::now(),
         });
-        self.queue_start_pending = Some(self.target());
+        self.queue_start_pending = Some((self.target(), Instant::now()));
         match self.target() {
             Target::Local if !self.local.connected => {
                 // Hold the request while the local engine reconnects.
@@ -8752,7 +8760,7 @@ impl App {
             if !self.local.is_active() {
                 // Connect transfers the active device's full playback state.
                 // A Web API snapshot may be stale and cannot recreate its queue.
-                self.queue_start_pending = Some(Target::Local);
+                self.queue_start_pending = Some((Target::Local, Instant::now()));
                 self.local_transfer_sequence = Some(self.local.track_sequence);
                 self.local_list = None;
                 self.resume_queue.clear();
@@ -9766,7 +9774,14 @@ impl App {
                 // discard that expectation or a quick Next, Previous leaves
                 // the row marker stuck on the skipped-to song.
                 self.intent_track = None;
-                self.queue_start_pending = Some(self.target());
+                // Past three seconds this only restarts the song: no track
+                // change follows, so there is no start to mark.
+                if self
+                    .now_playing_live()
+                    .is_none_or(|now| now.position_ms < RESTART_BEFORE_PREVIOUS)
+                {
+                    self.queue_start_pending = Some((self.target(), Instant::now()));
+                }
                 match self.target() {
                     Target::Local => self.backend.player(PlayerCommand::Previous),
                     Target::Remote(device_id) => self.remote(RemoteAction::Previous, device_id),
@@ -15845,6 +15860,58 @@ mod tests {
             }
             assert!(app.manual_queue.is_empty());
             assert_eq!(queue_uris(&app).1, ["spotify:track:context"]);
+            app.backend.shutdown();
+        }
+    }
+
+    #[test]
+    fn previous_that_restarts_the_song_still_lets_the_queue_advance() {
+        let ctx = egui::Context::default();
+        for stale in [false, true] {
+            let mut app = headless_app();
+            app.local = LocalState {
+                connected: true,
+                playback: Playback::Playing,
+                track: Some(crate::player::LocalTrack {
+                    uri: "spotify:track:a".into(),
+                    ..Default::default()
+                }),
+                position_ms: if stale { 1_000 } else { 10_000 },
+                ..Default::default()
+            };
+            app.on_now_playing_changed();
+            app.manual_queue = vec!["spotify:track:b".into()];
+            app.queue = loaded_queue(
+                "spotify:track:a",
+                &["spotify:track:b", "spotify:track:context"],
+            );
+            // Past three seconds Previous only restarts the song. Under
+            // three, a start is marked, but it lapses when no change follows.
+            app.apply(Action::Previous, &ctx);
+            if stale {
+                let (target, _) = app.queue_start_pending.take().expect("a start is marked");
+                app.queue_start_pending = Some((
+                    target,
+                    Instant::now() - PLAYBACK_HOLD - Duration::from_secs(1),
+                ));
+            } else {
+                assert!(app.queue_start_pending.is_none());
+            }
+            let mut advanced = app.local.clone();
+            advanced.track = Some(crate::player::LocalTrack {
+                uri: "spotify:track:b".into(),
+                ..Default::default()
+            });
+            advanced.track_sequence += 1;
+            app.handle_local(advanced);
+            assert!(app.manual_queue.is_empty());
+            assert_eq!(
+                queue_uris(&app),
+                (
+                    Some("spotify:track:b".into()),
+                    vec!["spotify:track:context".into()]
+                )
+            );
             app.backend.shutdown();
         }
     }
