@@ -30,6 +30,9 @@ env:
 jobs:
   version:
     name: version
+    # Only main is released. A dispatch from another branch would
+    # otherwise sign that branch and publish it as the latest update.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       build: ${{ steps.version.outputs.build }}
@@ -152,6 +155,9 @@ jobs:
     name: sign and publish
     needs: [version, build]
     runs-on: ubuntu-latest
+    # Holds SPOTIFAST_UPDATE_SIGNING_KEY once it is moved out of the
+    # repository secrets, with a deployment branch policy of main only.
+    environment: release-signing
     permissions:
       contents: write
     env:
