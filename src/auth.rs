@@ -63,6 +63,13 @@ pub const WEB_SCOPES: &[&str] = &[
 
 const AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
+
+#[cfg(test)]
+thread_local! {
+    /// A local token endpoint for tests on this thread.
+    pub static TEST_TOKEN_URL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// A browser sends its request line at once; anything slower or longer is
 /// not the redirect, and must not hold the listener while the user waits.
@@ -321,8 +328,14 @@ async fn token_request(
     http: &reqwest::Client,
     form: &[(&str, &str)],
 ) -> std::result::Result<TokenResponse, TokenEndpointError> {
+    #[cfg(not(test))]
+    let url = TOKEN_URL;
+    #[cfg(test)]
+    let url = TEST_TOKEN_URL
+        .with(|url| url.borrow().clone())
+        .unwrap_or_else(|| TOKEN_URL.to_string());
     let response = http
-        .post(TOKEN_URL)
+        .post(url)
         .form(form)
         .send()
         .await
