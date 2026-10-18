@@ -319,21 +319,33 @@ fn decode_token_response(
     status: reqwest::StatusCode,
     text: &str,
 ) -> std::result::Result<TokenResponse, TokenEndpointError> {
-    if status.is_client_error() {
+    // Only an OAuth error code is a rejection of the grant. A rate limit, a
+    // timeout or an unrecognised body says nothing about it, so the grant is
+    // kept and the request is tried again later.
+    let transient = matches!(
+        status,
+        reqwest::StatusCode::TOO_MANY_REQUESTS | reqwest::StatusCode::REQUEST_TIMEOUT
+    );
+    if status.is_client_error() && !transient {
         let value = serde_json::from_str::<serde_json::Value>(text).ok();
         // OAuth descriptions and malformed bodies may contain usable grants.
         // Report only known classifications, never authorization response text.
         let detail = match value.as_ref().and_then(|value| value["error"].as_str()) {
-            Some("invalid_grant") => "The grant expired or was revoked. Sign in again.",
-            Some("invalid_client") => "Check the Spotify application's Client ID.",
-            Some("invalid_scope") => "Spotify did not accept the requested permissions.",
-            Some("access_denied") => "Spotify authorization was declined.",
-            _ => "Sign in again and check the Spotify application settings.",
+            Some("invalid_grant") => Some("The grant expired or was revoked. Sign in again."),
+            Some("invalid_client") => Some("Check the Spotify application's Client ID."),
+            Some("invalid_scope") => Some("Spotify did not accept the requested permissions."),
+            Some("access_denied") => Some("Spotify authorization was declined."),
+            Some("invalid_request" | "unauthorized_client" | "unsupported_grant_type") => {
+                Some("Sign in again and check the Spotify application settings.")
+            }
+            _ => None,
         };
-        return Err(TokenEndpointError::Rejected {
-            status: status.as_u16(),
-            detail: detail.into(),
-        });
+        if let Some(detail) = detail {
+            return Err(TokenEndpointError::Rejected {
+                status: status.as_u16(),
+                detail: detail.into(),
+            });
+        }
     }
     if !status.is_success() {
         return Err(TokenEndpointError::Unreachable(format!(
@@ -518,6 +530,35 @@ mod tests {
         ] {
             let error = super::parse_request_line(request, "ok").unwrap_err();
             assert!(!format!("{error:?} {error}").contains("dummy-authorization-secret"));
+        }
+    }
+
+    #[test]
+    fn only_an_oauth_error_rejects_the_grant() {
+        let decode = |status, body| {
+            super::decode_token_response(reqwest::StatusCode::from_u16(status).unwrap(), body)
+                .unwrap_err()
+        };
+        for (status, body) in [
+            (429, ""),
+            (429, r#"{"error":"invalid_grant"}"#),
+            (408, ""),
+            (400, "<html>busy</html>"),
+            (403, r#"{"error":{"status":403,"message":"forbidden"}}"#),
+        ] {
+            assert!(
+                matches!(decode(status, body), TokenEndpointError::Unreachable(_)),
+                "{status} {body} must keep the grant"
+            );
+        }
+        for body in [
+            r#"{"error":"invalid_grant"}"#,
+            r#"{"error":"invalid_client"}"#,
+        ] {
+            assert!(matches!(
+                decode(400, body),
+                TokenEndpointError::Rejected { status: 400, .. }
+            ));
         }
     }
 

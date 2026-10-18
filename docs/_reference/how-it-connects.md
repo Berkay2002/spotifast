@@ -98,7 +98,8 @@ Since 0.8.0, requests that need a grant still being
 verified wait for it instead of showing "not signed in". Sign-out cancels
 pending requests, and their late results cannot undo a new sign-in. If Spotify
 rejects a saved refresh grant, Spotifast removes that grant and asks for a new
-browser approval. Upgrading to protected storage does not itself require
+browser approval. A token refresh that is rate limited, times out, or gets an
+answer without an OAuth error keeps the grant and is tried again. Upgrading to protected storage does not itself require
 signing in again.
 
 By default, Spotifast uses the public app shared with spotify-player, ncspot,
