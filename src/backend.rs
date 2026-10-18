@@ -3081,6 +3081,9 @@ impl Worker {
     // ---- local playback engine -------------------------------------------
 
     fn on_playback_authorized(&mut self, access_token: String) {
+        // The playback flow is over. Only its own completion releases the
+        // sender: an engine reconnect must not drop a Web sign-in's.
+        self.cancel_signin = None;
         let Some(credentials) = playback_credentials(self.api.account(), access_token) else {
             self.engine_busy = false;
             self.emit(Event::Playback(LocalPlayback::Failed(
@@ -3398,7 +3401,6 @@ impl Worker {
             return;
         }
         self.pending_playback_grant = Some(credentials.clone());
-        self.cancel_signin = None;
         self.engine_busy = true;
         self.engine_attempt = self.engine_attempt.wrapping_add(1);
         let attempt = self.engine_attempt;
@@ -7546,6 +7548,25 @@ mod authorization_tests {
                 .try_iter()
                 .any(|event| matches!(event, Event::Playback(LocalPlayback::Connecting)))
         );
+    }
+
+    /// An engine reconnect during a Web sign-in keeps that sign-in's cancel
+    /// sender, so its listener stays cancellable instead of spinning.
+    #[test]
+    fn engine_reconnect_keeps_a_web_sign_in_cancellable() {
+        let (runtime, mut worker, _events) = worker("reconnect-during-sign-in");
+        let _entered = runtime.enter();
+        verify(&mut worker, ApiSource::Shared, "alice");
+        worker.playback_grant = Some(Credentials::with_password("alice", "dummy-grant"));
+        let (cancel, receiver) = watch::channel(false);
+        worker.cancel_signin = Some(cancel);
+        worker.authorizing_source = Some(ApiSource::Personal);
+
+        worker.reconnect_engine();
+
+        assert!(worker.engine_busy);
+        assert!(worker.cancel_signin.is_some());
+        assert!(receiver.has_changed().is_ok(), "the sender was dropped");
     }
 
     /// A busy playback callback port reports the conflict and leaves the

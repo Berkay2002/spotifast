@@ -173,8 +173,8 @@ pub fn listen_for_redirect(port: u16) -> Result<TcpListener> {
 /// Listens on a reserved port for Spotify's redirect and returns the
 /// authorization code.
 ///
-/// Ends early when `cancel` flips to true (the user gave up) or after ten
-/// minutes.
+/// Ends early when `cancel` flips to true (the user gave up) or its sender
+/// is dropped, or after ten minutes.
 pub async fn wait_for_code_on_listener(
     listener: TcpListener,
     expected_state: &str,
@@ -186,8 +186,10 @@ pub async fn wait_for_code_on_listener(
     loop {
         let (mut stream, _) = tokio::select! {
             accepted = listener.accept() => accepted.context("redirect listener failed")?,
-            _ = cancel.changed() => {
-                if *cancel.borrow() { bail!("sign-in cancelled"); }
+            // A dropped sender is a cancel too: `changed` would otherwise
+            // return at once on every pass and spin this loop.
+            changed = cancel.changed() => {
+                if changed.is_err() || *cancel.borrow() { bail!("sign-in cancelled"); }
                 continue;
             }
             _ = &mut deadline => bail!("sign-in timed out; try again"),
@@ -624,6 +626,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(code, "test-code");
+    }
+
+    #[tokio::test]
+    async fn a_dropped_cancel_sender_ends_the_redirect_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (cancel, receiver) = watch::channel(false);
+        drop(cancel);
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_code_on_listener(listener, "state", receiver),
+        )
+        .await
+        .expect("the listener spun instead of ending")
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
     }
 
     #[test]
