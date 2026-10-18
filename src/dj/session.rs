@@ -514,6 +514,9 @@ impl Dj {
         self.busy = false;
         self.phase = None;
         self.hint = None;
+        // the next conversation is a new chat: the saved one keeps its id, and the notes go again
+        self.chat_id = self.chats.next_id();
+        self.notes_sent = None;
         self.chat_at = None;
         self.revision += 1;
     }
@@ -1378,6 +1381,26 @@ mod tests {
         assert!(asked[0].prompt.contains("no country") && asked[0].prompt.ends_with("one"));
         assert_eq!(asked[1].prompt, "two");
         assert!(asked[2].prompt.contains("likes jazz"));
+    }
+
+    #[test]
+    fn after_shutdown_the_next_turn_is_a_new_chat_and_gets_the_notes() {
+        let done = || ChatEvent::Done {
+            answer: "Queued.".into(),
+        };
+        let (mut dj, slot) = dj_with(vec![done()], ok_status());
+        dj.memory.remember("no country").unwrap();
+        dj.ask("first", "sonnet", "low");
+        dj.poll();
+        dj.shutdown();
+        let f = slot.lock().unwrap().clone().unwrap();
+        f.script.lock().unwrap().push(done());
+        dj.ask("second", "sonnet", "low");
+        dj.poll();
+        let titles: Vec<&str> = dj.chats().iter().map(|c| c.title.as_str()).collect();
+        assert_eq!(titles, ["second", "first"]);
+        let asked = f.asked.lock().unwrap();
+        assert!(asked[1].prompt.contains("no country") && asked[1].prompt.ends_with("second"));
     }
 
     #[test]
