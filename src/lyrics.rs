@@ -563,7 +563,11 @@ fn leading_stamp(text: &str) -> Option<(u32, usize)> {
         Some(_) => return None,
         None => 0,
     };
-    Some((minutes * 60_000 + seconds * 1_000 + fraction_ms, close + 2))
+    let at_ms = minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds.checked_mul(1_000)?)?
+        .checked_add(fraction_ms)?;
+    Some((at_ms, close + 2))
 }
 
 // ---- cache ------------------------------------------------------------------
@@ -710,6 +714,14 @@ mod tests {
         assert_eq!(lines[0].text, "Early");
         assert_eq!(lines[2].text, "Twice");
         assert_eq!(lines[3].text, "Twice");
+    }
+
+    #[test]
+    fn an_oversized_lrc_stamp_is_skipped() {
+        let lines = parse_lrc("[00:05]Early\n[99999:00.00]Huge\n[00:10]Later");
+        let times: Vec<u32> = lines.iter().filter_map(|line| line.at_ms).collect();
+        assert_eq!(times, vec![5_000, 10_000]);
+        assert!(lines.iter().all(|line| line.text != "Huge"));
     }
 
     #[test]
