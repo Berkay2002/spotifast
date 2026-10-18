@@ -6097,10 +6097,16 @@ impl App {
                     .pending_queue_batches
                     .values()
                     .any(|target| *target == self.target());
-                if writing_queue
-                    || result
-                        .as_ref()
-                        .is_ok_and(|fetched| self.queue_fetch_is_stale(fetched))
+                if writing_queue {
+                    // A pending write ends on its own, so waiting for it
+                    // must not spend the stale allowance that the reads
+                    // after the write still need.
+                    self.queue_recheck_at = Some(Instant::now() + QUEUE_RECHECK);
+                    return;
+                }
+                if result
+                    .as_ref()
+                    .is_ok_and(|fetched| self.queue_fetch_is_stale(fetched))
                 {
                     // Keep the optimistic queue and retry after a stale
                     // response. Accept Spotify's state after the retry limit.
@@ -15470,6 +15476,73 @@ mod tests {
         }
         let (current, _) = queue_uris(&app);
         assert_eq!(current.as_deref(), Some("spotify:track:a"));
+    }
+
+    /// Reads deferred while a queue write is pending do not use up the
+    /// stale allowance, so a lagging read after the write cannot undo a
+    /// skip made during it.
+    #[test]
+    fn a_long_queue_write_does_not_let_a_stale_answer_undo_a_skip() {
+        let ctx = egui::Context::default();
+        let mut app = test_app("queue-write-stale-skip");
+        app.auth = AuthStatus::Connected {
+            username: "alice".into(),
+        };
+        app.selected_device = Some("speaker".into());
+        app.remote = Some(RemoteSnapshot {
+            state: PlaybackState {
+                device: Some(crate::api::models::Device {
+                    id: Some("speaker".into()),
+                    name: "Speaker".into(),
+                    is_active: true,
+                    ..Default::default()
+                }),
+                item: Some(crate::api::models::PlayableItem::Track(
+                    crate::api::models::Track {
+                        uri: "spotify:track:a".into(),
+                        ..Default::default()
+                    },
+                )),
+                is_playing: true,
+                ..Default::default()
+            },
+            received_at: Instant::now(),
+        });
+        app.queue = loaded_queue("spotify:track:a", &["spotify:track:b", "spotify:track:c"]);
+        app.add_to_queue("spotify:track:added".into(), "Added".into());
+        let request = *app.pending_queue_batches.keys().next().unwrap();
+        let stale = Queue {
+            currently_playing: Some(queued_song("spotify:track:a")),
+            queue: vec![
+                queued_song("spotify:track:b"),
+                queued_song("spotify:track:c"),
+            ],
+        };
+        for _ in 0..=QUEUE_STALE_RETRIES {
+            app.handle_api(ApiResponse::Queue {
+                seq: app.queue_seq,
+                result: Ok(stale.clone()),
+            });
+        }
+        assert_eq!(app.queue_stale_retries, 0);
+
+        app.apply(Action::Next, &ctx);
+        app.handle_api(ApiResponse::QueueBatchAdded {
+            request,
+            added: 1,
+            result: Ok(()),
+        });
+        app.handle_api(ApiResponse::Queue {
+            seq: app.queue_seq,
+            result: Ok(stale),
+        });
+        let (current, _) = queue_uris(&app);
+        assert_eq!(
+            current.as_deref(),
+            Some("spotify:track:added"),
+            "the pop stands"
+        );
+        app.backend.shutdown();
     }
 
     /// A failed routine refresh keeps the queue on show, a just-added
