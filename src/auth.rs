@@ -203,8 +203,9 @@ pub async fn wait_for_code_on_listener(
         }
         let outcome = parse_request_line(&request_line, expected_state);
         let (status, body) = match &outcome {
-            Ok(_) => ("200 OK", success_page()),
-            Err(error) => ("400 Bad Request", failure_page(&error.to_string())),
+            Redirect::Code(_) => ("200 OK", success_page()),
+            Redirect::Denied => ("400 Bad Request", failure_page(DECLINED)),
+            Redirect::Ignored(reason) => ("400 Bad Request", failure_page(reason)),
         };
         let response = format!(
             "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{body}",
@@ -213,24 +214,34 @@ pub async fn wait_for_code_on_listener(
         let _ = stream.write_all(response.as_bytes()).await;
         let _ = stream.shutdown().await;
         match outcome {
-            Ok(code) => return Ok(code),
-            Err(error) => {
+            Redirect::Code(code) => return Ok(code),
+            Redirect::Denied => bail!(DECLINED),
+            Redirect::Ignored(reason) => {
                 // A favicon request or a stale tab is not the redirect; keep waiting.
-                log::debug!("ignored request on the redirect listener: {error}");
+                log::debug!("ignored request on the redirect listener: {reason}");
                 continue;
             }
         }
     }
 }
 
-fn parse_request_line(line: &str, expected_state: &str) -> Result<String> {
-    let target = line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow!("malformed request"))?;
+const DECLINED: &str = "Spotify authorization was declined";
+
+enum Redirect {
+    Code(String),
+    /// Spotify sent this flow's own state back with an error: the user declined.
+    Denied,
+    /// Not this flow's redirect (a favicon, a stale tab, another page).
+    Ignored(&'static str),
+}
+
+fn parse_request_line(line: &str, expected_state: &str) -> Redirect {
+    let Some(target) = line.split_whitespace().nth(1) else {
+        return Redirect::Ignored("malformed request");
+    };
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != REDIRECT_PATH {
-        bail!("unexpected redirect path");
+        return Redirect::Ignored("unexpected redirect path");
     }
     let mut code = None;
     let mut state = None;
@@ -247,13 +258,17 @@ fn parse_request_line(line: &str, expected_state: &str) -> Result<String> {
             _ => {}
         }
     }
-    if error.is_some() {
-        bail!("Spotify refused the sign-in. Try again.");
-    }
+    // The state comes first, so only this flow's own redirect can end it.
     if state.as_deref() != Some(expected_state) {
-        bail!("state mismatch");
+        return Redirect::Ignored("state mismatch");
     }
-    code.ok_or_else(|| anyhow!("Spotify did not return an authorization code"))
+    if error.is_some() {
+        return Redirect::Denied;
+    }
+    code.map_or(
+        Redirect::Ignored("Spotify did not return an authorization code"),
+        Redirect::Code,
+    )
 }
 
 pub async fn exchange_code(
@@ -530,8 +545,12 @@ mod tests {
             "GET /login?error=dummy-authorization-secret&state=ok HTTP/1.1",
             "GET /dummy-authorization-secret HTTP/1.1",
         ] {
-            let error = super::parse_request_line(request, "ok").unwrap_err();
-            assert!(!format!("{error:?} {error}").contains("dummy-authorization-secret"));
+            let reason = match super::parse_request_line(request, "ok") {
+                super::Redirect::Code(_) => panic!("{request} is not a code"),
+                super::Redirect::Denied => super::DECLINED,
+                super::Redirect::Ignored(reason) => reason,
+            };
+            assert!(!reason.contains("dummy-authorization-secret"));
         }
     }
 
@@ -643,6 +662,38 @@ mod tests {
         assert!(error.to_string().contains("cancelled"));
     }
 
+    #[tokio::test]
+    async fn declining_on_spotify_ends_the_redirect_listener() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (_cancel, receiver) = watch::channel(false);
+        let waiting =
+            tokio::spawn(
+                async move { wait_for_code_on_listener(listener, "state", receiver).await },
+            );
+        for request in [
+            "GET /login?error=access_denied&state=stale HTTP/1.1\r\n\r\n",
+            "GET /login?error=dummy-denial-secret&state=state HTTP/1.1\r\n\r\n",
+        ] {
+            let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            browser.write_all(request.as_bytes()).await.unwrap();
+            let mut page = String::new();
+            let _ = browser.read_to_string(&mut page).await;
+            assert!(!page.contains("dummy-denial-secret"));
+        }
+        let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("a declined consent kept the listener waiting")
+            .unwrap()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declined"));
+        assert!(!error.contains("dummy-denial-secret"));
+        assert!(!error.contains("cancelled"));
+    }
+
     #[test]
     fn old_web_grants_require_image_upload_consent() {
         let token = StoredToken {
@@ -702,14 +753,30 @@ mod tests {
 
     #[test]
     fn request_line_parsing() {
-        let code =
-            parse_request_line("GET /login?code=abc%20d&state=s1 HTTP/1.1\r\n", "s1").unwrap();
-        assert_eq!(code, "abc d");
-        assert!(parse_request_line("GET /login?code=abc&state=other HTTP/1.1", "s1").is_err());
-        assert!(parse_request_line("GET /favicon.ico HTTP/1.1", "s1").is_err());
-        assert!(
-            parse_request_line("GET /login?error=access_denied&state=s1 HTTP/1.1", "s1").is_err()
-        );
+        let parse = |line| parse_request_line(line, "s1");
+        assert!(matches!(
+            parse("GET /login?code=abc%20d&state=s1 HTTP/1.1\r\n"),
+            Redirect::Code(code) if code == "abc d"
+        ));
+        assert!(matches!(
+            parse("GET /login?code=abc&state=other HTTP/1.1"),
+            Redirect::Ignored(_)
+        ));
+        assert!(matches!(
+            parse("GET /favicon.ico HTTP/1.1"),
+            Redirect::Ignored(_)
+        ));
+        assert!(matches!(
+            parse("GET /login?error=access_denied&state=s1 HTTP/1.1"),
+            Redirect::Denied
+        ));
+        // A stale tab or another page cannot end the flow with an error.
+        for line in [
+            "GET /login?error=access_denied&state=other HTTP/1.1",
+            "GET /login?error=access_denied HTTP/1.1",
+        ] {
+            assert!(matches!(parse(line), Redirect::Ignored(_)));
+        }
     }
 
     #[test]
