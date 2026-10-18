@@ -6108,6 +6108,11 @@ impl App {
                     self.queue_recheck_at = Some(Instant::now() + QUEUE_RECHECK);
                     return;
                 }
+                if result.is_err() && self.queue.get().is_some() {
+                    // A failed refresh keeps the queue on show, optimistic
+                    // rows included; the next routine refresh asks again.
+                    return;
+                }
                 self.queue_stale_retries = 0;
                 if result.is_ok() {
                     self.queue_cleared = None;
@@ -15459,6 +15464,41 @@ mod tests {
         }
         let (current, _) = queue_uris(&app);
         assert_eq!(current.as_deref(), Some("spotify:track:a"));
+    }
+
+    /// A failed routine refresh keeps the queue on show, a just-added
+    /// song included, instead of replacing it with an error.
+    #[test]
+    fn a_failed_queue_refresh_keeps_the_shown_queue() {
+        let mut app = test_app("queue-refresh-error");
+        app.queue = loaded_queue("spotify:track:current", &["spotify:track:next"]);
+        app.add_to_queue("spotify:track:added".into(), "Added".into());
+        let shown = queue_uris(&app);
+        assert!(shown.1.contains(&"spotify:track:added".to_string()));
+        let request = *app.pending_queue_batches.keys().next().unwrap();
+        app.handle_api(ApiResponse::QueueBatchAdded {
+            request,
+            added: 1,
+            result: Ok(()),
+        });
+        assert!(app.pending_queue_batches.is_empty());
+        assert_eq!(queue_uris(&app), shown);
+
+        app.handle_api(ApiResponse::Queue {
+            seq: app.queue_seq,
+            result: Err(crate::api::ApiError::Network("offline".into())),
+        });
+        assert!(matches!(app.queue, Loadable::Loaded(_)));
+        assert_eq!(queue_uris(&app), shown);
+
+        // With nothing loaded yet, the failure is still shown.
+        app.queue = Loadable::Loading;
+        app.handle_api(ApiResponse::Queue {
+            seq: app.queue_seq,
+            result: Err(crate::api::ApiError::Network("offline".into())),
+        });
+        assert!(matches!(app.queue, Loadable::Failed(_)));
+        app.backend.shutdown();
     }
 
     /// A pending addition is not restored after its track starts.
