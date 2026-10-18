@@ -7389,6 +7389,12 @@ impl App {
                         self.optimistic_playing = None;
                         self.pending_remote_position = None;
                         self.pending_remote_volume = None;
+                        if action == RemoteAction::Shuffle {
+                            // Let the next poll's real shuffle state replace the
+                            // refused one instead of holding it for 5 s.
+                            self.shuffle_set_at = None;
+                            self.queue_shuffle_pending = None;
+                        }
                         if matches!(
                             action,
                             RemoteAction::Play | RemoteAction::Next | RemoteAction::Previous
@@ -16624,6 +16630,52 @@ mod tests {
             1,
             "the user's queued section is preserved"
         );
+    }
+
+    /// A shuffle toggle another device refuses does not leave the button on:
+    /// the next poll's real state replaces it, even inside the 5 s hold.
+    #[test]
+    fn a_refused_remote_shuffle_is_undone_by_the_next_poll() {
+        let mut app = headless_app();
+        app.auth = AuthStatus::Connected {
+            username: "alice".into(),
+        };
+        app.local_ready = false;
+        app.selected_device = Some("speaker".into());
+        let state = PlaybackState {
+            device: Some(crate::api::models::Device {
+                id: Some("speaker".into()),
+                name: "Speaker".into(),
+                is_active: true,
+                ..Default::default()
+            }),
+            item: Some(queued_song("spotify:track:playing")),
+            is_playing: true,
+            shuffle_state: false,
+            ..Default::default()
+        };
+        app.remote = Some(RemoteSnapshot {
+            state: state.clone(),
+            received_at: Instant::now(),
+        });
+
+        app.set_shuffle(true);
+        assert!(app.shuffle_wanted);
+        app.handle_api(ApiResponse::Remote {
+            action: RemoteAction::Shuffle,
+            result: Err(crate::api::ApiError::RateLimited),
+        });
+        app.handle_api(ApiResponse::PlaybackState {
+            seq: app.remote_poll_seq,
+            result: Ok(Some(state.clone())),
+        });
+        assert!(!app.shuffle_wanted, "the refused shuffle is undone");
+
+        app.handle_api(ApiResponse::PlaybackState {
+            seq: app.remote_poll_seq,
+            result: Ok(Some(state)),
+        });
+        assert!(!app.shuffle_wanted, "and stays undone");
     }
 
     /// Toggling shuffle for remote playback rechecks the queue on confirmation,
