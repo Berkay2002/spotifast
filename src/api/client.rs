@@ -117,21 +117,30 @@ pub struct WebTokens {
 }
 
 impl WebTokens {
+    /// `remember` saves refreshed tokens from the start. A grant restored from
+    /// storage passes true, so a rotated refresh token replaces the stored one
+    /// before verification; a fresh browser sign-in waits for `remember()`.
     pub fn new(
         http: impl Into<Http>,
         token: crate::auth::StoredToken,
         lease: crate::credentials::Lease,
         source: ApiSource,
         storage_error: std::sync::Arc<dyn Fn(crate::credentials::Error) + Send + Sync>,
+        remember: bool,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             http: http.into(),
             token: tokio::sync::Mutex::new(token),
             lease,
-            remember: std::sync::atomic::AtomicBool::new(false),
+            remember: std::sync::atomic::AtomicBool::new(remember),
             storage_error,
             source,
         })
+    }
+
+    #[cfg(test)]
+    pub fn remembers(&self) -> bool {
+        self.remember.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Start persistence only after the Web API has verified the account.
@@ -1551,6 +1560,7 @@ mod tests {
             store.lease(slot),
             ApiSource::Shared,
             std::sync::Arc::new(|_| {}),
+            false,
         );
         // Verification can use a token in memory without persisting it yet.
         assert_eq!(tokens.access_token(None).await.unwrap(), "dummy-access");
@@ -1596,6 +1606,7 @@ mod tests {
             .lease(crate::credentials::Slot::Shared),
             ApiSource::Shared,
             Arc::new(|_| {}),
+            false,
         ))));
         client
     }
@@ -1734,6 +1745,7 @@ mod tests {
                 .lease(crate::credentials::Slot::Shared),
                 ApiSource::Shared,
                 Arc::new(|_| {}),
+                false,
             ))));
             let mut uris = vec![
                 "spotify:track:a".into(),
@@ -1841,6 +1853,7 @@ mod tests {
                 .lease(crate::credentials::Slot::Shared),
                 ApiSource::Shared,
                 Arc::new(|_| {}),
+                false,
             ))));
             let result = client
                 .upload_playlist_cover("test-playlist", "/9j/test")

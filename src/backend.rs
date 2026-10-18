@@ -2207,7 +2207,7 @@ impl Worker {
                         && self.authorizing_source == Some(source)
                         && self.authorization_attempt == attempt
                     {
-                        self.on_web_signed_in(source, *token);
+                        self.on_web_signed_in(source, *token, false);
                     } else if self.authorization_attempt == attempt {
                         self.finish_authorization(source);
                     }
@@ -2672,7 +2672,9 @@ impl Worker {
                         if !self.signed_in {
                             self.emit(Event::Auth(AuthStatus::Connecting));
                         }
-                        self.on_web_signed_in(source, token);
+                        // A restored grant is the stored one, so a rotated refresh
+                        // token must reach storage even before /me answers.
+                        self.on_web_signed_in(source, token, true);
                     } else {
                         // Signing in renews only the shared app's grant, so a
                         // personal app has to be authorized again where it was
@@ -2721,7 +2723,12 @@ impl Worker {
         })
     }
 
-    fn on_web_signed_in(&mut self, source: ApiSource, token: crate::auth::StoredToken) {
+    fn on_web_signed_in(
+        &mut self,
+        source: ApiSource,
+        token: crate::auth::StoredToken,
+        restored: bool,
+    ) {
         let lease = self.credentials.lease(web_slot(source));
         let tokens = WebTokens::new(
             self.http.clone(),
@@ -2729,6 +2736,7 @@ impl Worker {
             lease.clone(),
             source,
             self.storage_notice(lease.clone()),
+            restored,
         );
         self.web_tokens[web_slot(source).index()] = Some(tokens.clone());
         self.api
@@ -7758,6 +7766,41 @@ mod authorization_tests {
             assert!(lease.current());
             assert!(matches!(runtime.block_on(lease.load()).unwrap().grant,
                 Some(StoredGrant::Web(saved)) if saved.refresh_token == "dummy-refresh"));
+        }
+    }
+
+    #[test]
+    fn a_restored_web_grant_saves_its_refreshes_before_verification() {
+        for slot in [CredentialSlot::Shared, CredentialSlot::Personal] {
+            let (runtime, mut worker, _events) = worker("restored-refresh");
+            let _entered = runtime.enter();
+            worker.web_client_id = Some("personal".into());
+            let lease = worker.credentials.lease(slot);
+            let token = crate::auth::StoredToken {
+                client_id: if slot == CredentialSlot::Shared {
+                    crate::auth::DEFAULT_WEB_CLIENT_ID.into()
+                } else {
+                    "personal".into()
+                },
+                access_token: "dummy-access".into(),
+                refresh_token: "dummy-refresh".into(),
+                expires_at: u64::MAX,
+                scope: crate::auth::WEB_SCOPES.join(" "),
+            };
+            runtime
+                .block_on(lease.save(StoredGrant::Web(token)))
+                .unwrap();
+            worker.restore_pending[slot.index()] = true;
+            let loaded = runtime.block_on(lease.load());
+            worker.on_credentials_restored(slot, lease, loaded);
+            // Spotify may rotate the refresh token on the restore's first
+            // refresh; a slow /me must not leave the old one in storage.
+            assert!(
+                worker.web_tokens[slot.index()]
+                    .as_ref()
+                    .unwrap()
+                    .remembers()
+            );
         }
     }
 

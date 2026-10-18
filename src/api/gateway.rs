@@ -500,6 +500,7 @@ mod tests {
             }),
             source,
             std::sync::Arc::new(|_| {}),
+            false,
         ))
     }
 
