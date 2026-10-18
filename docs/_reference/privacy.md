@@ -23,6 +23,9 @@ current release.
 - **Settings and history.** Settings, window positions, recent plays, the
   last session, skins, themes and MilkDrop presets live in the config
   directory.
+- **AI DJ.** Its notes, schedules and recent chats (`dj-memory`,
+  `dj-schedules` and `dj-chats`, one set per account) live in the config
+  directory. Signing out does not remove them.
 - **Caches.** Downloaded audio, artwork, lyrics and library metadata live in
   the cache directory and can be deleted at any time.
 - **Log.** `spotifast.log` records errors and diagnostics. It stays on your
@@ -53,6 +56,12 @@ Spotifast connects only to the services below.
   can turn automatic checks off in Settings. Downloading an update, and the
   first opening of MilkDrop, also fetch files from GitHub. No Spotify data is
   sent.
+- **Your Claude Code (AI DJ, only when you use it).** The [DJ](/dj/) gives
+  your own `claude` program what it needs to pick music: what is playing,
+  your queue, recent plays, liked songs, top artists and songs, playlists,
+  your DJ notes and your messages. Claude Code sends that to Anthropic under
+  your Claude plan, and Anthropic's terms for that plan apply. With **Let the
+  DJ search the web** on (the default), it can also search the web.
 - **Your local network.** Spotifast looks for Spotify Connect speakers over
   mDNS and talks to the ones you choose.
 
