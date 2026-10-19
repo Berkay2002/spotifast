@@ -28,6 +28,9 @@ const FIXED_IV: [u8; 16] = [
     253, 81, 222, 19, 70, 203, 45, 89, 141, 68, 210, 240, 93, 20, 76, 30,
 ];
 const HTTP_TIMEOUT: Duration = Duration::from_secs(6);
+/// Any LAN host can answer, so a reply is read only this far (Cast caps its
+/// frames the same way). Real `getInfo` and `addUser` replies are under 2 KiB.
+const MAX_REPLY: u64 = 64 * 1024;
 
 type HmacSha1 = Hmac<Sha1>;
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
@@ -223,7 +226,23 @@ fn get_info_with_timeout(
     if !response.status().is_success() {
         bail!("receiver answered {}", response.status());
     }
-    response.json().context("receiver sent an unreadable reply")
+    read_reply(response)
+}
+
+/// Parses a receiver's JSON reply, refusing one larger than `MAX_REPLY`.
+/// The limit applies after reqwest's gzip decoding, so a compressed bomb
+/// stops there too.
+fn read_reply<T: serde::de::DeserializeOwned>(response: reqwest::blocking::Response) -> Result<T> {
+    use std::io::Read;
+    let mut body = Vec::new();
+    response
+        .take(MAX_REPLY + 1)
+        .read_to_end(&mut body)
+        .context("receiver sent an unreadable reply")?;
+    if body.len() as u64 > MAX_REPLY {
+        bail!("receiver sent an oversized reply");
+    }
+    serde_json::from_slice(&body).context("receiver sent an unreadable reply")
 }
 
 /// Resolve advertisements before offering them as playback targets. This
@@ -330,9 +349,7 @@ pub fn add_user(
         .form(&form)
         .send()
         .context("receiver did not accept the connection")?;
-    let reply: AddUserReply = response
-        .json()
-        .context("receiver sent an unreadable reply")?;
+    let reply: AddUserReply = read_reply(response)?;
     // 101 is this interface's "OK".
     if reply.status == 101 {
         return Ok(());
@@ -613,6 +630,47 @@ mod tests {
             matches!(proxy.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
             "LAN discovery must send no request to the proxy"
         );
+    }
+
+    #[test]
+    fn an_oversized_receiver_reply_is_refused() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for size in [MAX_REPLY as usize, MAX_REPLY as usize + 1] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(&mut stream)
+                    .read_line(&mut line)
+                    .unwrap();
+                // Valid JSON padded with whitespace to exactly `size` bytes.
+                let json = r#"{"deviceID":"one","remoteName":"Living Room"}"#;
+                let body = format!("{json}{}", " ".repeat(size - json.len()));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let receiver = Receiver {
+            name: "House".into(),
+            device_id: None,
+            address: "127.0.0.1".parse().unwrap(),
+            port,
+            path: "/".into(),
+            cast: false,
+        };
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let timeout = Duration::from_secs(5);
+        let info = get_info_with_timeout(&http, &receiver, timeout).unwrap();
+        assert_eq!(info.device_id, "one");
+        assert!(get_info_with_timeout(&http, &receiver, timeout).is_err());
+        server.join().unwrap();
     }
 
     #[test]
