@@ -145,8 +145,9 @@ compact rows and softened placeholders keep using 64-pixel thumbnails. Up to 64
 softened 256-pixel covers may be retained in addition to the existing artwork
 budget, and their downloaded image bytes are released after decoding. A failed
 cache write does not prevent the downloaded image from being displayed.
-Softened previews reuse egui's decoded artwork after its encoded bytes have
-been released, without repeatedly reading the disk cache or downloading again.
+Softened previews are made off the UI thread from the artwork's encoded bytes
+while the loader still holds them, otherwise from its disk-cache copy or a fresh
+download, because egui lets go of its decoded copy once a cover's texture exists.
 
 The artwork cache is capped at 512 MiB, separately from the audio cache budget.
 Once per launch, in the background, Spotifast deletes leftover `.part` files
@@ -313,7 +314,7 @@ main fields are:
 | `playlist_shaded` | `false` | The playlist window is rolled up to its title bar |
 | `winamp_shaded` | `false` | The main window is rolled up to its title bar |
 | `milkdrop_open` | `false` | The MilkDrop window is open |
-| `milkdrop_seconds` | `30` | How long each MilkDrop preset plays |
+| `milkdrop_seconds` | `10` | How long each MilkDrop preset plays |
 | `milkdrop_fps` | `60` | MilkDrop frame rate; `0` is uncapped. At most 30 while the system saves energy |
 | `milkdrop_screen_hz` | `0` | Last refresh rate reported by MilkDrop's window |
 | `milkdrop_fullscreen` | `false` | The MilkDrop window fills the screen |
