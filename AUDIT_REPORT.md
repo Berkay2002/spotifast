@@ -158,6 +158,16 @@ The workflow's fix agents ran unattended; afterwards the orchestrating session:
 - **Added the missing blank line** after the subject of two commit messages (264ea8f, 47ba17d); later short shas changed accordingly. The pre-rewrite tip is kept at `refs/audit-backup/pre-reword`.
 - Re-ran fmt, both clippy variants, both test suites and rustdoc: all pass.
 
+## PR review follow-ups
+
+Codex's review of PR #2 found three gaps in audit fixes. Each was fixed, independently reviewed (pass) and covered by a test that fails without it:
+
+- **1e897ab** (F3 follow-up): only `access_denied` reports the sign-in as declined; any other OAuth error on the redirect ends it as a failed authorization.
+- **18cb97e** (F17/F18 follow-up): any change to a different account, not only Sign out, shuts the DJ down and drops waiting scheduled tasks. A same-account reconnect keeps it.
+- **712f91e** (F19 follow-up): each account's DJ notes, schedules and chats stay in memory across account switches, so switching back before a queued save lands cannot reopen a stale file.
+
+Left open by the review, minor: a turn event from the old account can still add a "Stopped." line to the new account's empty DJ panel (no chat is saved); a generation counter in `Dj::shutdown` would close it.
+
 ## Attempted but not kept
 
 | Id | Severity | Title | Outcome | Reason |
