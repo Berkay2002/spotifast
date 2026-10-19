@@ -1,10 +1,11 @@
 //! The child's private folder and the config file in it.
 //!
 //! The folder is the child's working directory and holds `mcp.json`, which carries the bearer token
-//! of Spotifast's tool server. On a shared temp directory (Linux, macOS) a predictable name or a
-//! default-permission file would let another local user read the token or plant a link in its place,
-//! so the name is 128 random bits, nothing that already exists is ever reused, and only the owner
-//! can enter the folder or read the file.
+//! of Spotifast's tool server. On a shared temp directory (Linux, macOS, or a Windows `TEMP` such as
+//! `C:\Temp`) a predictable name or a default-permission file would let another local user read the
+//! token or plant a link in its place, so the name is 128 random bits, nothing that already exists is
+//! ever reused, and only the owner can enter the folder or read the file: mode 0700/0600 on unix, a
+//! protected owner-only access list on Windows that the file inherits.
 
 use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -13,7 +14,8 @@ use std::path::{Path, PathBuf};
 const TRIES: usize = 8;
 
 /// Creates exactly `dir`, which must not exist (`create_dir`, never `create_dir_all`: a planted
-/// directory or link at that path is an error). On unix only the owner can enter it.
+/// directory or link at that path is an error). Only the owner can enter it.
+#[cfg(not(windows))]
 pub fn create_private_dir(dir: &Path) -> io::Result<()> {
     #[allow(unused_mut)] // only the unix mode setter needs `mut`
     let mut b = std::fs::DirBuilder::new();
@@ -23,6 +25,49 @@ pub fn create_private_dir(dir: &Path) -> io::Result<()> {
         b.mode(0o700);
     }
     b.create(dir)
+}
+
+/// Creates exactly `dir`, which must not exist, with an access list that is set at creation (no
+/// moment with the parent's inherited one), is protected from that parent, and grants the owner
+/// alone full access, inherited by everything made inside it.
+#[cfg(windows)]
+pub fn create_private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+    use windows_sys::Win32::Storage::FileSystem::CreateDirectoryW;
+    // D:P protected DACL, one allow ACE: OI|CI inherited by files and folders, FA full access,
+    // OW the object's owner (the user Spotifast runs as)
+    let sddl: Vec<u16> = "D:P(A;OICI;FA;;;OW)\0".encode_utf16().collect();
+    let path: Vec<u16> = dir.as_os_str().encode_wide().chain([0]).collect();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: both strings are NUL-terminated and outlive the calls; `sd` is freed below
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let r = if CreateDirectoryW(path.as_ptr(), &sa) == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+        LocalFree(sd);
+        r
+    }
 }
 
 /// A new private folder `spotifast-claude-<32 hex digits>` in `root`.
@@ -72,7 +117,8 @@ pub fn remove_stale(root: &Path, age: std::time::Duration, now: std::time::Syste
 }
 
 /// Writes `bytes` to a file that must not exist yet (`create_new`: a planted file or link is an
-/// error, not something to write through). On unix only the owner can read it.
+/// error, not something to write through). On unix only the owner can read it; on Windows it
+/// takes the owner-only access list of the folder `create_private_dir` made.
 pub fn write_new_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create_new(true);
@@ -182,6 +228,60 @@ mod tests {
         let cfg = dir.join("mcp.json");
         write_new_private(&cfg, b"{}").unwrap();
         assert_eq!(mode(&cfg), 0o600);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn only_the_owner_can_enter_the_folder_or_read_the_file() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+            SDDL_REVISION_1, SE_FILE_OBJECT,
+        };
+        use windows_sys::Win32::Security::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+        fn dacl(p: &Path) -> String {
+            let path: Vec<u16> = p.as_os_str().encode_wide().chain([0]).collect();
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let mut s: *mut u16 = std::ptr::null_mut();
+            let mut len = 0u32;
+            // SAFETY: NUL-terminated path; both returned buffers are freed with LocalFree
+            unsafe {
+                let e = GetNamedSecurityInfoW(
+                    path.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    &mut sd,
+                );
+                assert_eq!(e, 0, "{}", p.display());
+                assert_ne!(
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                        sd,
+                        SDDL_REVISION_1,
+                        DACL_SECURITY_INFORMATION,
+                        &mut s,
+                        &mut len,
+                    ),
+                    0
+                );
+                let out = String::from_utf16_lossy(std::slice::from_raw_parts(s, len as usize));
+                LocalFree(s.cast());
+                LocalFree(sd);
+                out.trim_end_matches('\0').to_string()
+            }
+        }
+        let root = scratch("acl");
+        let dir = private_dir_in(&root).unwrap();
+        // protected from the parent's list, and the owner is the only one in it
+        assert_eq!(dacl(&dir), "D:P(A;OICI;FA;;;OW)");
+        let cfg = dir.join("mcp.json");
+        write_new_private(&cfg, b"{}").unwrap();
+        assert_eq!(dacl(&cfg), "D:(A;ID;FA;;;OW)");
         let _ = std::fs::remove_dir_all(&root);
     }
 

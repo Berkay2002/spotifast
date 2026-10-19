@@ -112,7 +112,8 @@ the DJ to Spotify only.
 - Claude Code runs with none of its own tools (no files, no shell) except
   the optional web search. Spotifast's tools reach it through a server on
   `127.0.0.1` on a random port, protected by a one-time token that never
-  appears on a command line.
+  appears on a command line. It sits in a file in a folder only your user
+  account can open, even when the temp folder is shared.
 - No user, project or plugin settings of yours are loaded into it.
 - Each tool call is checked (types, counts, URIs by kind) before the app
   acts on it.
