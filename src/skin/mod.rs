@@ -298,9 +298,12 @@ impl Skin {
     }
 }
 
-/// The largest skin sheet decoded, per side and in decoded bytes.
-const MAX_SHEET_SIDE: u32 = 2048;
-const MAX_SHEET_BYTES: u64 = 4 * (MAX_SHEET_SIDE as u64) * (MAX_SHEET_SIDE as u64);
+/// The largest skin sheet decoded, per side and in decoded bytes. The
+/// largest classic sheet is under 500 px a side, and a 32-bit BMP of this
+/// size still fits under the archive's 8 MiB entry limit.
+const MAX_SHEET_SIDE: u32 = 1024;
+// Eight bytes a pixel, so a 16-bit RGBA PNG of the full size still decodes.
+const MAX_SHEET_BYTES: u64 = 8 * (MAX_SHEET_SIDE as u64) * (MAX_SHEET_SIDE as u64);
 
 /// Bound traversal of a selected unpacked skin folder.
 pub(crate) const MAX_SKIN_DEPTH: usize = 8;
