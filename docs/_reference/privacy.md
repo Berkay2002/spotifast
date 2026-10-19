@@ -20,9 +20,10 @@ current release.
   Linux. Your Spotify password never passes through Spotifast; you sign in
   on Spotify's own pages. A proxy password, if you set one, uses the same
   store.
-- **Settings and history.** Settings, window positions, recent plays, the
-  last session, skins, themes and MilkDrop presets live in the config
-  directory.
+- **Settings and history.** Settings, skins, themes and MilkDrop presets
+  live in the config directory. The last session (window positions
+  included) and recent plays (`session.json` and `history.json`) live in
+  the state directory, which on Linux and Windows is a different folder.
 - **AI DJ.** Its notes, schedules and recent chats (`dj-memory`,
   `dj-schedules` and `dj-chats`, one set per account) live in the config
   directory. Signing out does not remove them.
