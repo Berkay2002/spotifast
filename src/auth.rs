@@ -211,7 +211,7 @@ pub async fn wait_for_code_on_listener(
         let outcome = parse_request_line(&request_line, expected_state);
         let (status, body) = match &outcome {
             Redirect::Code(_) => ("200 OK", success_page()),
-            Redirect::Denied => ("400 Bad Request", failure_page(DECLINED)),
+            Redirect::Refused(reason) => ("400 Bad Request", failure_page(reason)),
             Redirect::Ignored(reason) => ("400 Bad Request", failure_page(reason)),
         };
         let response = format!(
@@ -222,7 +222,7 @@ pub async fn wait_for_code_on_listener(
         let _ = stream.shutdown().await;
         match outcome {
             Redirect::Code(code) => return Ok(code),
-            Redirect::Denied => bail!(DECLINED),
+            Redirect::Refused(reason) => bail!(reason),
             Redirect::Ignored(reason) => {
                 // A favicon request or a stale tab is not the redirect; keep waiting.
                 log::debug!("ignored request on the redirect listener: {reason}");
@@ -233,11 +233,14 @@ pub async fn wait_for_code_on_listener(
 }
 
 const DECLINED: &str = "Spotify authorization was declined";
+const NOT_AUTHORIZED: &str = "Spotify could not complete the authorization; try again";
 
 enum Redirect {
     Code(String),
-    /// Spotify sent this flow's own state back with an error: the user declined.
-    Denied,
+    /// Spotify sent this flow's own state back with an error: the user
+    /// declined (`access_denied`), or Spotify failed. The reason is ours;
+    /// Spotify's own error text is never shown or logged.
+    Refused(&'static str),
     /// Not this flow's redirect (a favicon, a stale tab, another page).
     Ignored(&'static str),
 }
@@ -269,8 +272,10 @@ fn parse_request_line(line: &str, expected_state: &str) -> Redirect {
     if state.as_deref() != Some(expected_state) {
         return Redirect::Ignored("state mismatch");
     }
-    if error.is_some() {
-        return Redirect::Denied;
+    match error.as_deref() {
+        Some("access_denied") => return Redirect::Refused(DECLINED),
+        Some(_) => return Redirect::Refused(NOT_AUTHORIZED),
+        None => {}
     }
     code.map_or(
         Redirect::Ignored("Spotify did not return an authorization code"),
@@ -560,7 +565,7 @@ mod tests {
         ] {
             let reason = match super::parse_request_line(request, "ok") {
                 super::Redirect::Code(_) => panic!("{request} is not a code"),
-                super::Redirect::Denied => super::DECLINED,
+                super::Redirect::Refused(reason) => reason,
                 super::Redirect::Ignored(reason) => reason,
             };
             assert!(!reason.contains("dummy-authorization-secret"));
@@ -686,7 +691,7 @@ mod tests {
             );
         for request in [
             "GET /login?error=access_denied&state=stale HTTP/1.1\r\n\r\n",
-            "GET /login?error=dummy-denial-secret&state=state HTTP/1.1\r\n\r\n",
+            "GET /login?error=access_denied&state=state&error_description=dummy-denial-secret HTTP/1.1\r\n\r\n",
         ] {
             let mut browser = tokio::net::TcpStream::connect(("127.0.0.1", port))
                 .await
@@ -781,8 +786,16 @@ mod tests {
         ));
         assert!(matches!(
             parse("GET /login?error=access_denied&state=s1 HTTP/1.1"),
-            Redirect::Denied
+            Redirect::Refused(DECLINED)
         ));
+        // Only access_denied is the user's choice; any other error is Spotify's.
+        for error in ["server_error", "temporarily_unavailable", "invalid_scope"] {
+            let line = format!("GET /login?error={error}&state=s1 HTTP/1.1");
+            assert!(matches!(
+                parse_request_line(&line, "s1"),
+                Redirect::Refused(NOT_AUTHORIZED)
+            ));
+        }
         // A stale tab or another page cannot end the flow with an error.
         for line in [
             "GET /login?error=access_denied&state=other HTTP/1.1",
