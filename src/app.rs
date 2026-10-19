@@ -659,6 +659,9 @@ pub struct App {
     /// to be signed in and, for a song, for its album to be known.
     pending_link: Option<String>,
     prerelease_request: Option<u64>,
+    /// The episode a link has asked Spotify about, so the link waiting
+    /// for the answer does not ask again every frame.
+    episode_request: Option<String>,
     prerelease_serial: u64,
     /// The songs behind the links last copied from a track table, so a
     /// paste of those links adds rows with their names straight away.
@@ -1117,6 +1120,7 @@ impl App {
             editable_by_grant: std::collections::BTreeSet::new(),
             pending_link: None,
             prerelease_request: None,
+            episode_request: None,
             prerelease_serial: 0,
             copied_songs: Vec::new(),
             pending_pastes: Vec::new(),
@@ -7389,21 +7393,31 @@ impl App {
                 }
             }
             // Only a link asks for an episode; its podcast's page is the
-            // nearest thing to a page for it.
-            ApiResponse::Episode { result, .. } => match result {
-                Ok(episode) => match episode.show.filter(|show| !show.id.is_empty()) {
-                    Some(show) => self.open(Page::Show(show.id)),
-                    None => self.toast_error(gettext(
-                        self.locale,
-                        "This episode's podcast is not on Spotify",
-                    )),
-                },
-                Err(error) => self.toast_error(
-                    // Translators: {error} is an error message.
-                    gettext(self.locale, "Cannot open this episode: {error}")
-                        .replace("{error}", &error.to_string()),
-                ),
-            },
+            // nearest thing to a page for it. An answer for a link the user
+            // has since moved on from is dropped.
+            ApiResponse::Episode { id, result } => {
+                if self.episode_request.as_deref() == Some(id.as_str()) {
+                    self.episode_request = None;
+                }
+                if self.pending_link.as_deref() != Some(format!("spotify:episode:{id}").as_str()) {
+                    return;
+                }
+                self.pending_link = None;
+                match result {
+                    Ok(episode) => match episode.show.filter(|show| !show.id.is_empty()) {
+                        Some(show) => self.open(Page::Show(show.id)),
+                        None => self.toast_error(gettext(
+                            self.locale,
+                            "This episode's podcast is not on Spotify",
+                        )),
+                    },
+                    Err(error) => self.toast_error(
+                        // Translators: {error} is an error message.
+                        gettext(self.locale, "Cannot open this episode: {error}")
+                            .replace("{error}", &error.to_string()),
+                    ),
+                }
+            }
             ApiResponse::Remote { action, result } => {
                 if matches!(action, RemoteAction::Play | RemoteAction::Pause) {
                     self.clear_play_pending();
@@ -7608,8 +7622,12 @@ impl App {
                 }
             }
             Some("episode") => {
-                self.pending_link = None;
-                self.backend.api(ApiRequest::Episode { id });
+                // The link waits for the answer, which opens the podcast
+                // only if the user has not moved on by then.
+                if self.episode_request.as_deref() != Some(id.as_str()) {
+                    self.episode_request = Some(id.clone());
+                    self.backend.api(ApiRequest::Episode { id });
+                }
             }
             _ => {
                 self.pending_link = None;
@@ -27106,6 +27124,58 @@ mod tests {
                 .iter()
                 .any(|toast| toast.message.contains("Cannot open"))
         );
+    }
+
+    /// An episode link asks once and opens the podcast, but an answer that
+    /// comes after the user has gone elsewhere does not pull them back.
+    #[test]
+    fn a_late_episode_answer_does_not_undo_later_navigation() {
+        use crate::api::models::{Episode, Show};
+
+        let answer = |id: &str, show: &str| ApiResponse::Episode {
+            id: id.into(),
+            result: Ok(Episode {
+                show: Some(Show {
+                    id: show.into(),
+                    ..Show::default()
+                }),
+                ..Episode::default()
+            }),
+        };
+        // #given a signed-in app handed an episode link
+        let mut app = headless_app();
+        let ctx = egui::Context::default();
+        app.user = Some(User {
+            id: "me".into(),
+            ..User::default()
+        });
+        app.actions
+            .push(Action::OpenLink("spotify:episode:e1".into()));
+        app.apply_actions(&ctx);
+
+        // #then the link waits for the answer and asks only once
+        assert_eq!(app.pending_link.as_deref(), Some("spotify:episode:e1"));
+        assert_eq!(app.episode_request.as_deref(), Some("e1"));
+        app.open_pending_link();
+        assert_eq!(app.episode_request.as_deref(), Some("e1"));
+
+        // #when the user opens another page before the answer arrives
+        app.open(Page::Playlist("pl1".into()));
+        app.handle_api(answer("e1", "sh1"));
+
+        // #then the late answer is dropped
+        assert_eq!(*app.page(), Page::Playlist("pl1".into()));
+        assert_eq!(app.episode_request, None);
+
+        // #when an episode link is answered while it still waits
+        app.actions
+            .push(Action::OpenLink("spotify:episode:e2".into()));
+        app.apply_actions(&ctx);
+        app.handle_api(answer("e2", "sh2"));
+
+        // #then the podcast opens
+        assert_eq!(*app.page(), Page::Show("sh2".into()));
+        assert_eq!(app.pending_link, None);
     }
 
     /// A link to something the app has no page for is refused with a word,
