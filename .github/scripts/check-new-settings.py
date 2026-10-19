@@ -22,7 +22,7 @@ from pathlib import Path
 FILE = "src/settings.rs"
 LABEL = "setting-approved"
 ROOT = "Settings"
-STRUCT = re.compile(r"^\s*pub(?:\([^)]*\))?\s+struct\s+(\w+)\s*\{", re.MULTILINE)
+STRUCT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)\s*\{", re.MULTILINE)
 # A field starts its line: optional visibility, a name, then one colon (a
 # type continued on the next line may start with a path such as `crate::`).
 FIELD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:r#)?(\w+)\s*:(?!:)")

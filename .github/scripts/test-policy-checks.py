@@ -245,6 +245,13 @@ class NewSettingsTest(unittest.TestCase):
             [("LibrarySidebar", "artists"), ("MiniPlayer", "on_top"), ("Settings", "mini")],
         )
 
+    def test_a_field_in_a_private_struct_settings_holds_counts(self):
+        head = settings_source("\n    pub crossfade: Crossfade,") + "\nstruct Crossfade {\n    seconds: u8,\n}\n"
+        self.assertEqual(
+            settings.added(settings_source(""), head),
+            [("Crossfade", "seconds"), ("Settings", "crossfade")],
+        )
+
     def test_a_struct_only_session_state_holds_does_not_count(self):
         base = settings_source("")
         head = base.replace("pub maximized: bool,", "pub maximized: bool,\n    pub fullscreen: bool,")
