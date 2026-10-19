@@ -6136,8 +6136,10 @@ impl App {
                 if writing_queue {
                     // A pending write ends on its own, so waiting for it
                     // must not spend the stale allowance that the reads
-                    // after the write still need.
-                    self.queue_recheck_at = Some(Instant::now() + QUEUE_RECHECK);
+                    // after the write still need. Nor does it ask again:
+                    // the write's answer, success or failure, refreshes
+                    // the queue, and polling meanwhile would spend the
+                    // rate limit that may be holding the write up.
                     return;
                 }
                 if result
@@ -15606,6 +15608,44 @@ mod tests {
             "the pop stands"
         );
         app.backend.shutdown();
+    }
+
+    /// A queue read answered while a write is pending does not schedule
+    /// another read, so a rate-limited write is not starved by polling;
+    /// the write's own answer, success or failure, refreshes the queue.
+    #[test]
+    fn a_pending_queue_write_waits_for_its_answer_instead_of_polling() {
+        for result in [Ok(()), Err(crate::api::ApiError::RateLimited)] {
+            let mut app = test_app("queue-write-no-poll");
+            app.auth = AuthStatus::Connected {
+                username: "alice".into(),
+            };
+            app.queue = loaded_queue("spotify:track:a", &["spotify:track:b"]);
+            let shown = app.queue.get().unwrap().clone();
+            app.add_to_queue("spotify:track:added".into(), "Added".into());
+            let request = *app.pending_queue_batches.keys().next().unwrap();
+            app.queue_recheck_at = None;
+            for _ in 0..3 {
+                app.handle_api(ApiResponse::Queue {
+                    seq: app.queue_seq,
+                    result: Ok(shown.clone()),
+                });
+                assert!(
+                    app.queue_recheck_at.is_none(),
+                    "no read is scheduled while the write is pending"
+                );
+            }
+
+            let asked = app.queue_seq;
+            app.handle_api(ApiResponse::QueueBatchAdded {
+                request,
+                added: usize::from(result.is_ok()),
+                result,
+            });
+            assert!(app.pending_queue_batches.is_empty());
+            assert_eq!(app.queue_seq, asked + 1, "the write's end asks again");
+            app.backend.shutdown();
+        }
     }
 
     /// A failed routine refresh keeps the queue on show, a just-added
