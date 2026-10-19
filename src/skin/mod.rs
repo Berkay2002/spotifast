@@ -45,8 +45,18 @@ pub struct Bitmap {
 impl Bitmap {
     /// Decodes a BMP or PNG, whatever the file was called: skins mislabel
     /// them. Anything unreadable is `None`, as Winamp silently skipped it.
+    /// Real sheets are a few hundred pixels a side, so one far larger than
+    /// that is skipped too, rather than inflating to gigabytes of pixels.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_SHEET_SIDE);
+        limits.max_image_height = Some(MAX_SHEET_SIDE);
+        limits.max_alloc = Some(MAX_SHEET_BYTES);
+        reader.limits(limits);
+        let image = reader.decode().ok()?.into_rgba8();
         Some(Self {
             width: image.width(),
             height: image.height(),
@@ -287,6 +297,10 @@ impl Skin {
         Some((bitmap, clipped))
     }
 }
+
+/// The largest skin sheet decoded, per side and in decoded bytes.
+const MAX_SHEET_SIDE: u32 = 2048;
+const MAX_SHEET_BYTES: u64 = 4 * (MAX_SHEET_SIDE as u64) * (MAX_SHEET_SIDE as u64);
 
 /// Bound traversal of a selected unpacked skin folder.
 pub(crate) const MAX_SKIN_DEPTH: usize = 8;
@@ -537,6 +551,20 @@ mod tests {
         ]);
         let skin = Skin::from_archive("broken", &archive).unwrap();
         assert!(!skin.has(Sheet::CButtons));
+    }
+
+    #[test]
+    fn an_oversized_sheet_is_skipped_for_the_built_in_one() {
+        let archive = zip::write(&[
+            ("main.bmp", &png(275, 116, [1, 1, 1]), false),
+            ("cbuttons.bmp", &png(MAX_SHEET_SIDE + 1, 1, [2, 2, 2]), true),
+        ]);
+        let skin = Skin::from_archive("huge", &archive).unwrap();
+        assert!(!skin.has(Sheet::CButtons));
+        assert_eq!(
+            skin.sheet(Sheet::CButtons),
+            Skin::builtin().sheet(Sheet::CButtons)
+        );
     }
 
     #[test]
