@@ -15,6 +15,9 @@ Spotifast follows each platform's conventions. On Linux:
 | Settings | `~/.config/spotifast/settings.json` | Yes, you lose preferences |
 | Winamp skins | `~/.config/spotifast/skins/` | Yes, you add them again |
 | MilkDrop presets | `~/.config/spotifast/milkdrop/` | Yes, you fetch them again |
+| AI DJ notes | `~/.config/spotifast/dj-memory.<account>.json` | Yes, the DJ forgets what you told it |
+| AI DJ schedules | `~/.config/spotifast/dj-schedules.<account>.json` | Yes, the scheduled tasks stop |
+| AI DJ recent chats | `~/.config/spotifast/dj-chats.<account>.json` | Yes, you lose the saved chats |
 | Spotify grants (available since 0.8.0) | System credential store | Use Sign out in Settings |
 | Credential revocation markers (available since 0.8.0) | `~/.local/state/spotifast/credential-storage/` | Keep after a failed sign-out deletion |
 | Legacy shared Web API grant | `~/.local/state/spotifast/shared_web_api_token.json` | Removed after migration or sign-out |
@@ -33,7 +36,7 @@ Spotifast follows each platform's conventions. On Linux:
 | Last run's log | `~/.local/state/spotifast/spotifast.log` | Always |
 | Crash log | `~/.local/state/spotifast/panic.log` | Always |
 
-When the settings, session or history file cannot be read (a typo from a
+When the settings, session, history or a DJ file cannot be read (a typo from a
 hand edit, for example), Spotifast starts from the defaults and keeps the
 file beside it as `<name>.corrupt-<time>`, so you can fix it and put it back.
 
@@ -41,7 +44,8 @@ Clearing caches never signs you out. Sign-out from Settings covers the shared
 and personal Web API grants and the independent playback credential. It also
 removes the cached library of every account: playlist pages, the playlist
 list, Home shelves and Liked Songs metadata. The audio, artwork and lyrics
-caches stay, since they belong to no account.
+caches stay, since they belong to no account. So do the AI DJ's notes,
+schedules and chats, which are kept per account for the next sign-in.
 
 The following credential storage is available since 0.8.0.
 
@@ -329,6 +333,13 @@ main fields are:
 | `proxy_host` | none | Host of a manual HTTP or SOCKS5 proxy. Ignored when the mode is `off` or `system` |
 | `proxy_port` | none | Port of a manual HTTP or SOCKS5 proxy |
 | `proxy_username` | none | Optional proxy login for Web requests; authenticated local playback proxying is not supported |
+| `dj_enabled` | `true` | Offer the AI DJ: its sidebar entry and page |
+| `dj_model` | `sonnet` | Claude Code model the DJ asks for |
+| `dj_effort` | `low` | Claude Code effort the DJ asks for: `low`, `medium`, `high`, `xhigh` or `max` |
+| `dj_confirm_writes` | `true` | The DJ asks before it changes the library or a playlist |
+| `dj_web` | `true` | The DJ may search the web for facts about music |
+| `dj_autopilot` | `false` | The DJ tops up a queue that runs low without being asked |
+| `dj_background_model` | empty | Model for the DJ's own turns (autopilot, schedules); empty uses `dj_model` |
 
 ## Command line
 
