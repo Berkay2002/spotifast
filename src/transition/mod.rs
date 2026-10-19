@@ -18,6 +18,7 @@ pub mod schedule;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use librespot_core::{Session, SpotifyUri};
 use librespot_playback::player::PlayerEvent;
@@ -43,6 +44,9 @@ const KEPT_TRACKS: usize = 32;
 /// The next track is preloaded this long before the end when transitions
 /// are on, so the longest overlap can start on time.
 const TRANSITION_PRELOAD_MS: u32 = schedule::LATEST_START_BEFORE_END_MS + 5_000;
+/// A recipe fetch that has not answered, or failed, is asked again after
+/// this long, on the next queue update.
+const RECIPES_RETRY: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -169,6 +173,10 @@ struct State {
     /// The playing playlist's recipes, by the pair each was made for.
     context: String,
     recipes: HashMap<(String, String), Recipe>,
+    /// Whether the playing context's recipes arrived, and when they were
+    /// last asked for, so turning recipes on or a failed fetch asks again.
+    recipes_loaded: bool,
+    recipes_asked: Option<Instant>,
     /// Bumped whenever analysis or recipes arrive, so a plan made without
     /// them is made again.
     generation: u64,
@@ -246,17 +254,27 @@ impl Planner {
         state.generation += 1;
     }
 
-    /// Starts on a new playing context; returns whether its recipes are
-    /// wanted.
+    /// Notes the playing context; returns whether its recipes should be
+    /// fetched now: wanted, not loaded, and not asked for recently.
     fn enter_context(&self, context: &str) -> bool {
         let mut state = self.state();
-        if state.context == context {
-            return false;
+        if state.context != context {
+            state.context = context.to_string();
+            state.recipes.clear();
+            state.recipes_loaded = false;
+            state.recipes_asked = None;
+            state.generation += 1;
         }
-        state.context = context.to_string();
-        state.recipes.clear();
-        state.generation += 1;
-        self.settings().recipes() && context.starts_with("spotify:playlist:")
+        let fetch = self.settings().recipes()
+            && context.starts_with("spotify:playlist:")
+            && !state.recipes_loaded
+            && state
+                .recipes_asked
+                .is_none_or(|asked| asked.elapsed() >= RECIPES_RETRY);
+        if fetch {
+            state.recipes_asked = Some(Instant::now());
+        }
+        fetch
     }
 
     fn found_recipes(&self, context: &str, recipes: Vec<Recipe>) {
@@ -265,6 +283,7 @@ impl Planner {
             return;
         }
         log::info!("{} Mix transitions in the playing playlist", recipes.len());
+        state.recipes_loaded = true;
         state.recipes = recipes
             .into_iter()
             .filter_map(|recipe| {
@@ -469,6 +488,29 @@ mod tests {
             (194_000, 0, 6_000)
         );
         assert_eq!(crossfade.preload_before_end_ms(), TRANSITION_PRELOAD_MS);
+    }
+
+    #[test]
+    fn recipes_are_fetched_once_turned_on_and_again_after_a_failed_fetch() {
+        const P: &str = "spotify:playlist:2222222222222222222222";
+        let planner = planner(Mode::Crossfade, false);
+        assert!(!planner.enter_context(P));
+        planner.set_settings(Settings {
+            mix_recipes: true,
+            ..planner.settings()
+        });
+        // Turned on in the same playlist, the next queue update fetches.
+        assert!(planner.enter_context(P));
+        // A fetch in flight is not repeated...
+        assert!(!planner.enter_context(P));
+        // ...but one that failed is asked again after a while.
+        planner.state().recipes_asked = Instant::now().checked_sub(RECIPES_RETRY);
+        assert!(planner.enter_context(P));
+        planner.found_recipes(P, Vec::new());
+        planner.state().recipes_asked = Instant::now().checked_sub(RECIPES_RETRY);
+        assert!(!planner.enter_context(P));
+        assert!(!planner.enter_context("spotify:album:3333333333333333333333"));
+        assert!(planner.enter_context(P));
     }
 
     #[test]
