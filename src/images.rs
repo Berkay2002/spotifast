@@ -392,8 +392,12 @@ fn remove_cached_files(dir: &Path) -> std::io::Result<u64> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         if entry.file_type()?.is_file() {
-            removed += entry.metadata().map(|m| m.len()).unwrap_or(0);
-            let _ = std::fs::remove_file(entry.path());
+            let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            // Only what is really gone counts as freed.
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed += len,
+                Err(error) => log::warn!("could not remove a cached image: {error}"),
+            }
         }
     }
     Ok(removed)
