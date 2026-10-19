@@ -21,7 +21,7 @@ const DEFLATED: u16 = 8;
 const ENCRYPTED: u16 = 1;
 /// The most an entry may inflate to. Skin bitmaps run to a few hundred
 /// kilobytes; this stops a crafted archive from claiming gigabytes.
-const ENTRY_LIMIT: usize = 64 << 20;
+const ENTRY_LIMIT: usize = 8 << 20;
 
 #[derive(Debug, Error)]
 pub enum ZipError {

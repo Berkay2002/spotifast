@@ -81,6 +81,19 @@ impl Bitmap {
 /// The files a skin is read from, keyed by lower-case file name.
 type Files = HashMap<String, Vec<u8>>;
 
+/// The most a whole skin may hold: the file read from disk, and everything
+/// inflated out of it. A classic skin is well under a megabyte.
+const SKIN_LIMIT: usize = 32 << 20;
+
+/// Refuses a file larger than any skin before it is read into memory.
+fn check_size(path: &Path, len: u64) -> Result<(), SkinError> {
+    if len > SKIN_LIMIT as u64 {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        return Err(SkinError::Archive(zip::ZipError::TooLarge(name.into())));
+    }
+    Ok(())
+}
+
 pub struct Skin {
     /// The file or folder name, for showing which skin is on.
     pub name: String,
@@ -101,6 +114,7 @@ impl Skin {
         if path.is_dir() {
             Self::from_dir(name, path)
         } else {
+            check_size(path, std::fs::metadata(path)?.len())?;
             Self::from_archive(name, &std::fs::read(path)?)
         }
     }
@@ -115,16 +129,26 @@ impl Skin {
             other => SkinError::Archive(other),
         })?;
         let mut files = Files::new();
-        for entry in archive.entries() {
+        let mut total = 0;
+        // Walking backwards and keeping the first copy read is the same as
+        // the last copy winning, but inflates each name once: a crafted
+        // archive can point thousands of entries at one large stream.
+        for entry in archive.entries().iter().rev() {
             if entry.is_dir() {
                 continue;
             }
             let file_name = entry.file_name();
-            if !wanted(&file_name) {
+            if !wanted(&file_name) || files.contains_key(&file_name) {
                 continue;
             }
             match archive.read(entry) {
                 Ok(bytes) => {
+                    total += bytes.len();
+                    if total > SKIN_LIMIT {
+                        return Err(SkinError::Archive(zip::ZipError::TooLarge(
+                            entry.name.clone(),
+                        )));
+                    }
                     files.insert(file_name, bytes);
                 }
                 Err(error) => log::warn!("skin {name}: {error}"),
@@ -149,6 +173,7 @@ impl Skin {
                 } else if kind.is_file() {
                     let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                     if wanted(&file_name) && !files.contains_key(&file_name) {
+                        check_size(&entry.path(), entry.metadata()?.len())?;
                         files.insert(file_name, std::fs::read(entry.path())?);
                     }
                 }
@@ -390,6 +415,51 @@ mod tests {
         ]);
         let skin = Skin::from_archive("twice", &archive).unwrap();
         assert_eq!(skin.sheet(Sheet::Main).pixel(5, 5), Some([0, 20, 0, 255]));
+    }
+
+    #[test]
+    fn a_name_repeated_across_the_directory_is_inflated_once() {
+        let archive = zip::write(&[
+            ("main.bmp", &vec![0u8; 4 << 20], true),
+            ("main.bmp", &png(275, 116, [0, 20, 0]), false),
+        ]);
+        // Point a hundred more directory entries at the large first file.
+        let end = archive.len() - 22;
+        let directory =
+            u32::from_le_bytes(archive[end + 16..end + 20].try_into().unwrap()) as usize;
+        let record = &archive[directory..directory + 46 + "main.bmp".len()];
+        let mut crafted = archive[..directory].to_vec();
+        for _ in 0..100 {
+            crafted.extend_from_slice(record);
+        }
+        crafted.extend_from_slice(&archive[directory..end + 8]);
+        let count = (u16::from_le_bytes([archive[end + 8], archive[end + 9]]) + 100).to_le_bytes();
+        crafted.extend_from_slice(&count);
+        crafted.extend_from_slice(&count);
+        let size = (crafted.len() - directory - 12) as u32;
+        crafted.extend_from_slice(&size.to_le_bytes());
+        crafted.extend_from_slice(&(directory as u32).to_le_bytes());
+        crafted.extend_from_slice(&0u16.to_le_bytes());
+
+        let skin = Skin::from_archive("repeated", &crafted).unwrap();
+        assert_eq!(skin.sheet(Sheet::Main).pixel(5, 5), Some([0, 20, 0, 255]));
+    }
+
+    #[test]
+    fn a_skin_that_inflates_past_the_limit_is_refused() {
+        let zeros = vec![0u8; 6 << 20];
+        let names = [
+            "main", "cbuttons", "titlebar", "posbar", "volume", "balance",
+        ];
+        let names: Vec<String> = names.iter().map(|stem| format!("{stem}.bmp")).collect();
+        let entries: Vec<(&str, &[u8], bool)> = names
+            .iter()
+            .map(|name| (name.as_str(), zeros.as_slice(), true))
+            .collect();
+        assert!(matches!(
+            Skin::from_archive("huge", &zip::write(&entries)),
+            Err(SkinError::Archive(zip::ZipError::TooLarge(_)))
+        ));
     }
 
     #[test]
