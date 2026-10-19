@@ -3468,11 +3468,13 @@ impl App {
     /// visualizers draw now, from the user's rate and the power budget;
     /// `None` draws none.
     pub fn visualiser_fps(&self) -> Option<u32> {
-        crate::power::visualiser_fps(
-            self.budget,
-            self.power.conditions(),
-            self.settings.visualizer_fps,
-        )
+        self.budgeted_fps(self.settings.visualizer_fps)
+    }
+
+    /// An animation's `fps` (0 is the display's rate) within the power
+    /// budget, scaled as the visualizers scale theirs; `None` draws none.
+    pub fn budgeted_fps(&self, fps: u32) -> Option<u32> {
+        crate::power::visualiser_fps(self.budget, self.power.conditions(), fps)
     }
 
     /// The screen rate the visualizers' frame-rate dial offers: the one
@@ -21799,6 +21801,18 @@ mod tests {
         assert_eq!(app.connected_repaint_interval(), REMOTE_POLL_UNSEEN);
         app.budget = crate::power::Budget::Saver;
         assert_eq!(app.connected_repaint_interval(), REMOTE_POLL_ACTIVE);
+    }
+
+    /// The DJ crate's turning disc follows the power budget: half rate out
+    /// of focus, none while nobody can see the window.
+    #[test]
+    fn the_dj_disc_turns_at_half_rate_out_of_focus() {
+        let mut app = headless_app();
+        assert_eq!(app.budgeted_fps(30), Some(30));
+        app.budget = crate::power::Budget::Saver;
+        assert_eq!(app.budgeted_fps(30), Some(15));
+        app.budget = crate::power::Budget::Background;
+        assert_eq!(app.budgeted_fps(30), None);
     }
 
     /// A poll asked for soon, after a transfer or a remote command, stays
