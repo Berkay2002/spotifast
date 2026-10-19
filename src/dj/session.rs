@@ -15,6 +15,7 @@ use super::tools::{Call, ToolReply};
 use super::{AskRequest, ChatEvent, Provider, Sink, Status};
 use crate::i18n::{Locale, gettext};
 use fastframe_shell::Waker;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -129,6 +130,9 @@ pub struct Dj {
     /// Where the DJ keeps its files, and the account they are open for.
     dir: Option<(std::path::PathBuf, Arc<fastframe_file::Writer>)>,
     account: Option<String>,
+    /// The files of the accounts signed in before, as last handed to the writer. Switching back
+    /// reopens these, not the disk, which may not hold their newest write yet.
+    kept: HashMap<String, (Memory, Schedules, Chats)>,
     /// Stop was pressed: calls still arriving for the turn are refused, not run.
     stopping: bool,
     /// The DJ setting is off and the child was shut down for it.
@@ -212,6 +216,7 @@ impl Dj {
             background: false,
             dir: None,
             account: None,
+            kept: HashMap::new(),
             stopping: false,
             off: false,
             notes_sent: None,
@@ -229,7 +234,8 @@ impl Dj {
 
     /// Opens the notes, schedules and saved chats of the signed-in account. The newest chat is
     /// not reopened: every start is a new conversation. Files from before there were accounts
-    /// (`dj-memory.json` and the others) become the first account's, once.
+    /// (`dj-memory.json` and the others) become the first account's, once. An account signed in
+    /// before in this run gets back what it held, which can be newer than its files.
     ///
     /// Returns whether it replaced another account. That account's conversation, child and
     /// waiting approvals go first (`shutdown`), so nothing of theirs runs under this one; the same
@@ -264,11 +270,22 @@ impl Dj {
             }
             (mine, files.clone())
         };
-        self.memory = Memory::open(file("dj-memory"));
-        self.schedules = Schedules::open(file("dj-schedules"));
-        self.chats = Chats::open(file("dj-chats"));
+        let (memory, schedules, chats) = self.kept.remove(id).unwrap_or_else(|| {
+            (
+                Memory::open(file("dj-memory")),
+                Schedules::open(file("dj-schedules")),
+                Chats::open(file("dj-chats")),
+            )
+        });
+        let left = (
+            std::mem::replace(&mut self.memory, memory),
+            std::mem::replace(&mut self.schedules, schedules),
+            std::mem::replace(&mut self.chats, chats),
+        );
+        if let Some(previous) = self.account.replace(id.to_string()) {
+            self.kept.insert(previous, left);
+        }
         self.chat_id = self.chats.next_id();
-        self.account = Some(id.to_string());
         replaced
     }
 
@@ -1144,6 +1161,39 @@ mod tests {
         dj.set_account("bob");
         assert_eq!(dj.memory.notes(), ["likes jazz"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Switching back to an account whose last save has not reached the disk yet keeps that save,
+    /// and the next one builds on it instead of on the older file.
+    #[test]
+    fn switching_back_before_a_save_lands_keeps_it() {
+        let written = Arc::new(Mutex::new(Vec::<(std::path::PathBuf, Vec<u8>)>::new()));
+        let seen = written.clone();
+        // nothing reaches the disk: every reopen from it would read an empty file
+        let files = Arc::new(fastframe_file::Writer::with_write(move |path, bytes, _| {
+            seen.lock()
+                .unwrap()
+                .push((path.to_path_buf(), bytes.to_vec()));
+            Ok(())
+        }));
+        let dir = std::env::temp_dir().join("spotifast-dj-never-written-accounts");
+        let (mut dj, _) = dj_with(Vec::new(), ok_status());
+        dj.attach(&dir, files.clone());
+        dj.set_account("alice");
+        dj.memory.remember("no country").unwrap();
+        dj.set_account("bob");
+        dj.set_account("alice");
+        assert_eq!(dj.memory.notes(), ["no country"]);
+        dj.memory.remember("likes jazz").unwrap();
+        assert!(files.flush(fastframe_file::FLUSH_TIMEOUT));
+        let written = written.lock().unwrap();
+        let (_, last) = written
+            .iter()
+            .rfind(|(path, _)| path.ends_with("dj-memory.alice.json"))
+            .unwrap();
+        let notes: Memory = serde_json::from_slice(last).unwrap();
+        assert_eq!(notes.notes(), ["no country", "likes jazz"]);
+        assert!(!dir.exists());
     }
 
     #[test]
