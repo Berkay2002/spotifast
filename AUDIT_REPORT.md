@@ -166,6 +166,19 @@ Codex's review of PR #2 found three gaps in audit fixes. Each was fixed, indepen
 - **18cb97e** (F17/F18 follow-up): any change to a different account, not only Sign out, shuts the DJ down and drops waiting scheduled tasks. A same-account reconnect keeps it.
 - **712f91e** (F19 follow-up): each account's DJ notes, schedules and chats stay in memory across account switches, so switching back before a queued save lands cannot reopen a stale file.
 
+CodeRabbit's review then found six more, each fixed and independently reviewed (pass):
+
+- **4fad6eb** (F39 follow-up): the new-settings check also reads private structs that Settings holds.
+- **0697bbe** (F35 follow-up): clearing the artwork cache counts only files it really removed.
+- **4e2cf44** (F32 follow-up): skin sheets are capped at 1024 px a side so any permitted 32-bit BMP fits the zip reader's 8 MiB entry limit.
+- **0716ac8** (F45 follow-up): a pending queue write no longer polls the queue every 700 ms; its answer refreshes the queue.
+- **9387138** (F41 follow-up): a Connect transfer back to this computer slower than 6 s no longer consumes a queued copy of the song.
+- The DJ pending-save comment was already fixed by 712f91e.
+
+Not changed, for the maintainer: on Windows the DJ's private folder in TEMP relies on ACLs, which a volume without persistent ACL support (FAT) does not enforce. Refusing the DJ there is a product decision; this predates the audit.
+
+Also left open, minor: a play request held while local playback reconnects uses the same 6 s marker and could count as a queue advance if reconnecting takes longer; and a queue batch whose answer the backend drops after a renewed lease is never cleared, so that target's queue reads wait until the next sign-out (a timeout on `pending_queue_batches` would close it).
+
 Left open by the review, minor: a turn event from the old account can still add a "Stopped." line to the new account's empty DJ panel (no chat is saved); a generation counter in `Dj::shutdown` would close it.
 
 ## Attempted but not kept
