@@ -5416,13 +5416,13 @@ async fn spotify_lyrics(
 ) -> Option<crate::lyrics::Lyrics> {
     let id = uri.strip_prefix("spotify:track:")?;
     let path = cache_dir.join(format!("spotify-{id}.json"));
-    if let Some(cached) = crate::lyrics::cached(&path) {
+    if let Some(cached) = crate::lyrics::cached(&path).await {
         return cached;
     }
     match engine?.lyrics_json(uri).await {
         Ok(json) => {
             let found = json.as_ref().and_then(crate::lyrics::from_spotify);
-            crate::lyrics::store(&path, &found);
+            crate::lyrics::store(&path, &found).await;
             found
         }
         Err(error) => {
