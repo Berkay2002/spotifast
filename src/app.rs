@@ -10363,6 +10363,8 @@ impl App {
             }
             Action::SignOut => {
                 self.dj.shutdown();
+                // a scheduled task waiting to run belongs to this account, not to the next one
+                self.dj_state.due.clear();
                 self.backend.send(Command::SignOut);
                 self.history = vec![Page::Home];
                 self.history_index = 0;

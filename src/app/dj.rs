@@ -87,7 +87,7 @@ pub(super) struct DjState {
     track: Option<(String, String, u32, u32)>,
     skips: Vec<Instant>,
     schedule_checked: Option<Instant>,
-    due: VecDeque<String>,
+    pub(super) due: VecDeque<String>,
 }
 
 fn id_of(uri: &str) -> Result<String, String> {
@@ -1635,18 +1635,21 @@ impl App {
         } else {
             self.dj.feed.clear();
         }
-        if self
-            .dj_state
-            .schedule_checked
-            .is_none_or(|at| now.duration_since(at) >= SCHEDULE_EVERY)
+        if self.dj.busy || !self.dj.ready() {
+            return;
+        }
+        // a task is marked as run only when the DJ can run it now: one that falls due while the
+        // DJ cannot start waits on disk and lapses after its catch-up window instead of firing late
+        if self.dj_state.due.is_empty()
+            && self
+                .dj_state
+                .schedule_checked
+                .is_none_or(|at| now.duration_since(at) >= SCHEDULE_EVERY)
         {
             self.dj_state.schedule_checked = Some(now);
             for task in self.dj.schedules.due(&Moment::now()) {
                 self.dj_state.due.push_back(task.prompt);
             }
-        }
-        if self.dj.busy || !self.dj.ready() {
-            return;
         }
         let model = if self.settings.dj_background_model.is_empty() {
             self.settings.dj_model.clone()
@@ -1752,6 +1755,57 @@ mod tests {
         Call::LikeTracks {
             uris: vec!["spotify:track:a".into()],
         }
+    }
+
+    /// A task that falls due while the DJ cannot start is not used up: it keeps its last run and
+    /// waits for a check when the DJ can take it.
+    #[test]
+    fn a_task_due_while_the_dj_cannot_run_is_not_marked_as_run() {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-dj-schedule-test-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            super::super::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            super::super::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+            },
+        );
+        app.user = Some(crate::api::models::User {
+            id: "alice".into(),
+            ..Default::default()
+        });
+        app.dj.status = Some(crate::dj::Status {
+            installed: true,
+            logged_in: false,
+            account: None,
+            plan: None,
+            error: None,
+            version: None,
+        });
+        let now = Moment::now();
+        app.dj
+            .schedules
+            .add(
+                crate::dj::tools::Slot {
+                    cadence: crate::dj::tools::Cadence::Daily,
+                    minute: now.minute,
+                    weekday: None,
+                    date: None,
+                },
+                "morning mix",
+            )
+            .unwrap();
+        app.dj_background();
+        assert!(app.dj_state.due.is_empty());
+        let task = &app.dj.schedules.tasks()[0];
+        assert_eq!(task.last_run, None);
     }
 
     #[test]
