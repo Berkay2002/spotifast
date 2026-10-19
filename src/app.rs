@@ -10680,25 +10680,7 @@ impl App {
                 self.rebuild_recents();
                 self.toast(gettext(self.locale, "Play history cleared"));
             }
-            Action::ClearArtCache => match self.backend.art().clear_disk_cache() {
-                Ok(bytes) => {
-                    ctx.forget_all_images();
-                    // The media controls hold a path into what was just
-                    // deleted; forget it, or the next sync hands the system
-                    // a file that is no longer there.
-                    self.media_art = None;
-                    self.toast(
-                        // Translators: {size} is a size in megabytes, such as 12.5.
-                        gettext(self.locale, "Cleared {size} MB of artwork")
-                            .replace("{size}", &format!("{:.1}", bytes as f64 / 1_048_576.0)),
-                    );
-                }
-                Err(error) => self.toast_error(
-                    // Translators: {error} is an error message.
-                    gettext(self.locale, "Couldn't clear artwork: {error}")
-                        .replace("{error}", &error.to_string()),
-                ),
-            },
+            Action::ClearArtCache => self.backend.art().clear_disk_cache(ctx),
             Action::ToggleWinampWindow => {
                 // One window at a time: this one closes and the loop in
                 // `main` opens the other kind where each was last.
@@ -11167,6 +11149,34 @@ impl App {
 }
 
 impl App {
+    /// Finishes clearing the artwork cache once its files are gone, and
+    /// says whether it did.
+    fn handle_art_cache_cleared(&mut self, ctx: &egui::Context) -> bool {
+        let Some(result) = self.backend.art().take_cleared() else {
+            return false;
+        };
+        match result {
+            Ok(bytes) => {
+                ctx.forget_all_images();
+                // The media controls hold a path into what was just
+                // deleted; forget it, or the next sync hands the system
+                // a file that is no longer there.
+                self.media_art = None;
+                self.toast(
+                    // Translators: {size} is a size in megabytes, such as 12.5.
+                    gettext(self.locale, "Cleared {size} MB of artwork")
+                        .replace("{size}", &format!("{:.1}", bytes as f64 / 1_048_576.0)),
+                );
+            }
+            Err(error) => self.toast_error(
+                // Translators: {error} is an error message.
+                gettext(self.locale, "Couldn't clear artwork: {error}")
+                    .replace("{error}", &error.to_string()),
+            ),
+        }
+        true
+    }
+
     /// Runs background work with or without a main window.
     pub fn background_frame(&mut self, ctx: &egui::Context) {
         if self.autoscroll.cancel_if_unfocused(ctx) {
@@ -11175,6 +11185,7 @@ impl App {
         self.handle_control_commands();
         self.handle_dj();
         self.handle_events();
+        self.handle_art_cache_cleared(ctx);
         self.open_pending_link();
         self.handle_media_commands();
         self.sync_power(ctx);
@@ -20522,11 +20533,26 @@ mod tests {
         );
 
         // #when the artwork cache is emptied, the remembered path goes too
-        app.actions.push(Action::ClearArtCache);
-        app.apply_actions(&ctx);
+        clear_art_cache(&mut app, &ctx);
         assert_eq!(app.media_art, None, "a path into a deleted cache");
+        assert!(!file.exists(), "the cached file should have been deleted");
 
         let _ = std::fs::remove_file(&file);
+    }
+
+    /// Clears the artwork cache as the Settings button does, and waits for
+    /// the files to be deleted off the UI thread.
+    fn clear_art_cache(app: &mut App, ctx: &egui::Context) {
+        app.actions.push(Action::ClearArtCache);
+        app.apply_actions(ctx);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !app.handle_art_cache_cleared(ctx) {
+            assert!(
+                Instant::now() < deadline,
+                "the artwork cache was not cleared"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
     }
 
     /// Changes the conditions as the power reader would.
@@ -20714,8 +20740,7 @@ mod tests {
         assert!(app.backend.art().prefetch(&ctx, url), "the first request");
 
         // #when the artwork cache is emptied
-        app.actions.push(Action::ClearArtCache);
-        app.apply_actions(&ctx);
+        clear_art_cache(&mut app, &ctx);
 
         // #then the next request downloads it again
         assert!(
