@@ -555,19 +555,24 @@ impl ClaudeProvider {
         if self.cancel.load(Ordering::SeqCst) {
             return Err(Failure::new(LISTENER_STOPPED));
         }
-        let mut st = self.state.lock().unwrap();
-        if let Some(r) = &st.running
-            && r.proc.is_alive()
-            && r.model.as_deref() == model
-            && r.effort.as_deref() == effort
-            && r.web == web
-        {
-            return Ok(r.proc.clone());
-        }
-        if let Some(old) = st.running.take() {
+        let (old, session_id) = {
+            let mut st = self.state.lock().unwrap();
+            if let Some(r) = &st.running
+                && r.proc.is_alive()
+                && r.model.as_deref() == model
+                && r.effort.as_deref() == effort
+                && r.web == web
+            {
+                return Ok(r.proc.clone());
+            }
+            (st.running.take(), st.session_id.clone())
+        };
+        if let Some(old) = old {
             old.close();
         }
         *self.rx.lock().unwrap() = None;
+        // the slow part below (the search for the CLI, the temp folder, the tool server, the spawn)
+        // holds no state lock: a Stop, sign-out or quit on the UI thread does not wait for it
         let Some(l) = self.launch() else {
             return Err(Failure::hinted(NOT_INSTALLED, "install"));
         };
@@ -601,24 +606,26 @@ impl ClaudeProvider {
             return Err(Failure::new(format!("{PREPARE}{e}")));
         }
         let mut args = l.args.clone();
-        args.extend(build_args(
-            &cfg,
-            model,
-            effort,
-            st.session_id.as_deref(),
-            web,
-        ));
+        args.extend(build_args(&cfg, model, effort, session_id.as_deref(), web));
         match Proc::spawn(&l.program, &args, &self.env_for_child(), &dir) {
             Ok((proc, rx)) => {
-                *self.rx.lock().unwrap() = Some(rx);
-                st.running = Some(Running {
+                let running = Running {
                     proc: proc.clone(),
                     mcp,
                     dir,
                     model: model.map(str::to_string),
                     effort: effort.map(str::to_string),
                     web,
-                });
+                };
+                let mut st = self.state.lock().unwrap();
+                // a stop or shutdown that came while it started: the new child is not kept
+                if self.cancel.load(Ordering::SeqCst) || self.closed.load(Ordering::SeqCst) {
+                    drop(st);
+                    running.close();
+                    return Err(Failure::new(LISTENER_STOPPED));
+                }
+                *self.rx.lock().unwrap() = Some(rx);
+                st.running = Some(running);
                 Ok(proc)
             }
             Err(e) => {
@@ -1147,5 +1154,47 @@ mod tests {
         assert!(is_session_id(UUID));
         assert!(!is_session_id("--resume"));
         assert!(!is_session_id("0b7f5d1e-3c4a-4e8f-9a21"));
+    }
+
+    #[test]
+    fn a_stop_or_shutdown_does_not_wait_for_a_child_being_started() {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = Mutex::new(release_rx);
+        // finding the CLI stands for every slow step of a start
+        let find: FindCli = Box::new(move |_| {
+            let _ = entered_tx.send(());
+            let _ = release_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(10));
+            None
+        });
+        let host: ToolHost = Arc::new(|_, _| Err("unused".into()));
+        let provider = Arc::new(ClaudeProvider::build(host, find, Box::new(Vec::new)));
+        let (ev_tx, ev_rx) = std::sync::mpsc::channel();
+        let sink: Sink = Arc::new(move |e| {
+            let _ = ev_tx.send(e);
+        });
+        let req = AskRequest {
+            prompt: "hi".into(),
+            web: false,
+            model: None,
+            effort: None,
+        };
+        provider.clone().ask(req, sink).unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let t = Instant::now();
+        provider.cancel();
+        provider.shutdown();
+        assert!(t.elapsed() < Duration::from_secs(2), "{:?}", t.elapsed());
+        release_tx.send(()).unwrap();
+        let end = loop {
+            match ev_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                ChatEvent::Status { .. } => continue,
+                e => break e,
+            }
+        };
+        assert!(matches!(end, ChatEvent::Cancelled), "{end:?}");
     }
 }
