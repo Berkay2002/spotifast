@@ -2,8 +2,9 @@
 """Fails when a pull request adds a setting the maintainer has not approved.
 
 A new setting needs the maintainer's approval in its issue first
-(CONTRIBUTING.md, "Settings"). This compares the fields of `Settings` and the
-other `...Settings` structs in src/settings.rs between the pull request's base
+(CONTRIBUTING.md, "Settings"). This compares the fields of `Settings`, and of
+every struct in src/settings.rs that it holds directly or through another one
+(such as `HomeSettings` or `LibrarySidebar`), between the pull request's base
 and its head, and fails on any field the head adds, a renamed field included.
 The maintainer approves one by adding the `setting-approved` label, which only
 people with triage access can do, and re-running the check.
@@ -20,7 +21,8 @@ from pathlib import Path
 
 FILE = "src/settings.rs"
 LABEL = "setting-approved"
-STRUCT = re.compile(r"^pub struct (\w*Settings)\s*\{", re.MULTILINE)
+ROOT = "Settings"
+STRUCT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?struct\s+(\w+)\s*\{", re.MULTILINE)
 # A field starts its line: optional visibility, a name, then one colon (a
 # type continued on the next line may start with a path such as `crate::`).
 FIELD = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:r#)?(\w+)\s*:(?!:)")
@@ -57,18 +59,24 @@ def without_attributes(text):
 
 
 def fields(source):
-    """{struct name: set of field names} for each `pub struct ...Settings`."""
+    """{struct name: set of field names} for `Settings` and each struct it holds."""
     # Comments first, so that a brace or a bracket in one changes nothing.
     source = "\n".join(line.split("//", 1)[0] for line in source.splitlines())
-    found = {}
-    for match in STRUCT.finditer(source):
-        text = without_attributes(body(source, match.end() - 1))
+    bodies = {match.group(1): without_attributes(body(source, match.end() - 1)) for match in STRUCT.finditer(source)}
+    found, pending = {}, [ROOT] if ROOT in bodies else []
+    while pending:
+        name = pending.pop()
+        if name in found:
+            continue
+        text = bodies[name]
         names = set()
         for line in text.splitlines():
             field = FIELD.match(line)
             if field:
                 names.add(field.group(1))
-        found[match.group(1)] = names
+        found[name] = names
+        # A struct named in a field's type is stored in settings.json too.
+        pending += [other for other in bodies if re.search(rf"\b{other}\b", text)]
     return found
 
 

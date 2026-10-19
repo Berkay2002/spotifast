@@ -82,7 +82,7 @@ pub fn report_missing_opengl(locale: crate::i18n::Locale) {
         )
     };
     if answer == IDYES
-        && let Err(error) = open::that(message.page)
+        && let Err(error) = crate::opener::open(message.page)
     {
         log::warn!("cannot open {}: {error}", message.page);
     }

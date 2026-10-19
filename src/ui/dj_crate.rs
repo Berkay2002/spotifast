@@ -23,6 +23,8 @@ const SLEEVE: f32 = 124.0;
 const LABEL_H: f32 = 18.0;
 const TITLES_H: f32 = 34.0;
 const MAX_NEXT: usize = 12;
+/// The turning label's frame rate in focus; the power budget lowers it.
+const DISC_FPS: u32 = 30;
 /// How much of an up-next sleeve shows before the next one lies over it.
 const VISIBLE: f32 = 0.72;
 
@@ -294,8 +296,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     if age < secs(SLIDE + 0.12) || dealing {
         ctx.request_repaint();
     }
-    if is_playing && !reduced {
-        ctx.request_repaint_after(Duration::from_millis(33));
+    if is_playing
+        && !reduced
+        && let Some(fps) = app.budgeted_fps(DISC_FPS)
+    {
+        theme::repaint_after(&ctx, Duration::from_secs_f64(1.0 / f64::from(fps)));
     }
 
     let art = app.backend.art();

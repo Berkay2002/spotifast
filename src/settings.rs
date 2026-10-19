@@ -4,6 +4,55 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// The text of a state file, or `None` when there is none. A file that
+/// exists but cannot be read is set aside first, see [`set_aside`].
+fn read_text(path: &Path) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            set_aside(path, &error);
+            None
+        }
+    }
+}
+
+/// Reads a JSON state file. A missing file is the default. A file that
+/// cannot be read or parsed is set aside before starting from the default.
+pub(crate) fn load_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    read_text(path)
+        .and_then(|text| {
+            serde_json::from_str(&text)
+                .map_err(|error| set_aside(path, &error))
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+/// Renames an unreadable state file to `<name>.corrupt-<time>`, so the
+/// next save of the defaults does not overwrite what could be recovered.
+// ponytail: a file that can be neither read nor renamed (held open without
+// delete sharing) is still replaced by the next save.
+fn set_aside(path: &Path, error: &dyn std::fmt::Display) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".corrupt-{at}"));
+    let aside = path.with_file_name(name);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => log::warn!(
+            "{} is unreadable ({error}); kept it as {}",
+            path.display(),
+            aside.display()
+        ),
+        Err(rename) => log::warn!(
+            "{} is unreadable ({error}) and could not be set aside: {rename}",
+            path.display()
+        ),
+    }
+}
+
 /// Local Library identity only. Never sent to Spotify as a context URI.
 pub const LIKED_SONGS_KEY: &str = "spotifast:liked-songs";
 
@@ -696,22 +745,20 @@ impl Settings {
     }
 
     pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(text) => {
-                // A file edited in Notepad or Windows PowerShell can start with
-                // a byte order mark, which JSON does not allow.
-                let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-                let mut settings = serde_json::from_str(text).unwrap_or_else(|error| {
-                    log::warn!("settings at {} are unreadable: {error}", path.display());
-                    Self::default()
-                });
-                settings.migrate_proxy(text);
-                settings.forget_unusable_screen_rate();
-                settings.proxy_password_legacy = !settings.proxy_password.is_empty();
-                settings
-            }
-            Err(_) => Self::default(),
-        }
+        let Some(text) = read_text(path) else {
+            return Self::default();
+        };
+        // A file edited in Notepad or Windows PowerShell can start with
+        // a byte order mark, which JSON does not allow.
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        let mut settings = serde_json::from_str(text).unwrap_or_else(|error| {
+            set_aside(path, &error);
+            Self::default()
+        });
+        settings.migrate_proxy(text);
+        settings.forget_unusable_screen_rate();
+        settings.proxy_password_legacy = !settings.proxy_password.is_empty();
+        settings
     }
 
     /// The settings as their file holds them.
@@ -1227,6 +1274,33 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(settings.volume, 12345);
         assert!(!settings.home.made_for_you.visible);
+    }
+
+    /// A settings file this build cannot read (a typo from a hand edit, an
+    /// unknown value) is kept beside it, so the defaults saved next do not
+    /// overwrite the preferences in it.
+    #[test]
+    fn an_unreadable_settings_file_is_kept_beside_it() {
+        let dir = std::env::temp_dir().join(format!("spotifast-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let text = r#"{"volume":12345,"theme":"no-such-theme",}"#;
+        std::fs::write(&path, text).unwrap();
+        let settings = Settings::load(&path);
+        let kept: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .collect();
+        let exists = path.exists();
+        let kept_text = kept.first().map(std::fs::read_to_string);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(settings, Settings::default());
+        assert!(!exists);
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].to_string_lossy().contains("settings.json.corrupt-"));
+        assert_eq!(kept_text.unwrap().unwrap(), text);
     }
 
     /// Earlier versions kept Windows's 1 Hz "hardware default" as MilkDrop's
@@ -1862,10 +1936,7 @@ pub struct WindowMode {
 
 impl SessionState {
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+        load_json(path)
     }
 
     /// The session as its file holds it.

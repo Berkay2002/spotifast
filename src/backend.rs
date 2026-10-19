@@ -2207,7 +2207,7 @@ impl Worker {
                         && self.authorizing_source == Some(source)
                         && self.authorization_attempt == attempt
                     {
-                        self.on_web_signed_in(source, *token);
+                        self.on_web_signed_in(source, *token, false);
                     } else if self.authorization_attempt == attempt {
                         self.finish_authorization(source);
                     }
@@ -2672,7 +2672,9 @@ impl Worker {
                         if !self.signed_in {
                             self.emit(Event::Auth(AuthStatus::Connecting));
                         }
-                        self.on_web_signed_in(source, token);
+                        // A restored grant is the stored one, so a rotated refresh
+                        // token must reach storage even before /me answers.
+                        self.on_web_signed_in(source, token, true);
                     } else {
                         // Signing in renews only the shared app's grant, so a
                         // personal app has to be authorized again where it was
@@ -2721,7 +2723,12 @@ impl Worker {
         })
     }
 
-    fn on_web_signed_in(&mut self, source: ApiSource, token: crate::auth::StoredToken) {
+    fn on_web_signed_in(
+        &mut self,
+        source: ApiSource,
+        token: crate::auth::StoredToken,
+        restored: bool,
+    ) {
         let lease = self.credentials.lease(web_slot(source));
         let tokens = WebTokens::new(
             self.http.clone(),
@@ -2729,6 +2736,7 @@ impl Worker {
             lease.clone(),
             source,
             self.storage_notice(lease.clone()),
+            restored,
         );
         self.web_tokens[web_slot(source).index()] = Some(tokens.clone());
         self.api
@@ -3081,6 +3089,9 @@ impl Worker {
     // ---- local playback engine -------------------------------------------
 
     fn on_playback_authorized(&mut self, access_token: String) {
+        // The playback flow is over. Only its own completion releases the
+        // sender: an engine reconnect must not drop a Web sign-in's.
+        self.cancel_signin = None;
         let Some(credentials) = playback_credentials(self.api.account(), access_token) else {
             self.engine_busy = false;
             self.emit(Event::Playback(LocalPlayback::Failed(
@@ -3398,7 +3409,6 @@ impl Worker {
             return;
         }
         self.pending_playback_grant = Some(credentials.clone());
-        self.cancel_signin = None;
         self.engine_busy = true;
         self.engine_attempt = self.engine_attempt.wrapping_add(1);
         let attempt = self.engine_attempt;
@@ -5406,13 +5416,13 @@ async fn spotify_lyrics(
 ) -> Option<crate::lyrics::Lyrics> {
     let id = uri.strip_prefix("spotify:track:")?;
     let path = cache_dir.join(format!("spotify-{id}.json"));
-    if let Some(cached) = crate::lyrics::cached(&path) {
+    if let Some(cached) = crate::lyrics::cached(&path).await {
         return cached;
     }
     match engine?.lyrics_json(uri).await {
         Ok(json) => {
             let found = json.as_ref().and_then(crate::lyrics::from_spotify);
-            crate::lyrics::store(&path, &found);
+            crate::lyrics::store(&path, &found).await;
             found
         }
         Err(error) => {
@@ -7548,6 +7558,25 @@ mod authorization_tests {
         );
     }
 
+    /// An engine reconnect during a Web sign-in keeps that sign-in's cancel
+    /// sender, so its listener stays cancellable instead of spinning.
+    #[test]
+    fn engine_reconnect_keeps_a_web_sign_in_cancellable() {
+        let (runtime, mut worker, _events) = worker("reconnect-during-sign-in");
+        let _entered = runtime.enter();
+        verify(&mut worker, ApiSource::Shared, "alice");
+        worker.playback_grant = Some(Credentials::with_password("alice", "dummy-grant"));
+        let (cancel, receiver) = watch::channel(false);
+        worker.cancel_signin = Some(cancel);
+        worker.authorizing_source = Some(ApiSource::Personal);
+
+        worker.reconnect_engine();
+
+        assert!(worker.engine_busy);
+        assert!(worker.cancel_signin.is_some());
+        assert!(receiver.has_changed().is_ok(), "the sender was dropped");
+    }
+
     /// A busy playback callback port reports the conflict and leaves the
     /// saved playback grant alone, without opening the browser (#899).
     #[test]
@@ -7737,6 +7766,41 @@ mod authorization_tests {
             assert!(lease.current());
             assert!(matches!(runtime.block_on(lease.load()).unwrap().grant,
                 Some(StoredGrant::Web(saved)) if saved.refresh_token == "dummy-refresh"));
+        }
+    }
+
+    #[test]
+    fn a_restored_web_grant_saves_its_refreshes_before_verification() {
+        for slot in [CredentialSlot::Shared, CredentialSlot::Personal] {
+            let (runtime, mut worker, _events) = worker("restored-refresh");
+            let _entered = runtime.enter();
+            worker.web_client_id = Some("personal".into());
+            let lease = worker.credentials.lease(slot);
+            let token = crate::auth::StoredToken {
+                client_id: if slot == CredentialSlot::Shared {
+                    crate::auth::DEFAULT_WEB_CLIENT_ID.into()
+                } else {
+                    "personal".into()
+                },
+                access_token: "dummy-access".into(),
+                refresh_token: "dummy-refresh".into(),
+                expires_at: u64::MAX,
+                scope: crate::auth::WEB_SCOPES.join(" "),
+            };
+            runtime
+                .block_on(lease.save(StoredGrant::Web(token)))
+                .unwrap();
+            worker.restore_pending[slot.index()] = true;
+            let loaded = runtime.block_on(lease.load());
+            worker.on_credentials_restored(slot, lease, loaded);
+            // Spotify may rotate the refresh token on the restore's first
+            // refresh; a slow /me must not leave the old one in storage.
+            assert!(
+                worker.web_tokens[slot.index()]
+                    .as_ref()
+                    .unwrap()
+                    .remembers()
+            );
         }
     }
 

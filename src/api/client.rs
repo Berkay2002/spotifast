@@ -100,9 +100,11 @@ impl TokenProvider {
         }
     }
 
-    async fn invalidate(&self, rejected: &str) {
+    /// Refresh after a 401. A refused grant or an unreachable token endpoint
+    /// is reported, since retrying would only resend the token just refused.
+    async fn invalidate(&self, rejected: &str) -> Result<()> {
         let Self::Web(tokens) = self;
-        let _ = tokens.access_token(Some(rejected)).await;
+        tokens.access_token(Some(rejected)).await.map(drop)
     }
 }
 
@@ -117,21 +119,30 @@ pub struct WebTokens {
 }
 
 impl WebTokens {
+    /// `remember` saves refreshed tokens from the start. A grant restored from
+    /// storage passes true, so a rotated refresh token replaces the stored one
+    /// before verification; a fresh browser sign-in waits for `remember()`.
     pub fn new(
         http: impl Into<Http>,
         token: crate::auth::StoredToken,
         lease: crate::credentials::Lease,
         source: ApiSource,
         storage_error: std::sync::Arc<dyn Fn(crate::credentials::Error) + Send + Sync>,
+        remember: bool,
     ) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             http: http.into(),
             token: tokio::sync::Mutex::new(token),
             lease,
-            remember: std::sync::atomic::AtomicBool::new(false),
+            remember: std::sync::atomic::AtomicBool::new(remember),
             storage_error,
             source,
         })
+    }
+
+    #[cfg(test)]
+    pub fn remembers(&self) -> bool {
+        self.remember.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Start persistence only after the Web API has verified the account.
@@ -575,7 +586,7 @@ impl ApiClient {
 
             if status == StatusCode::UNAUTHORIZED && attempt == 1 {
                 drop(permit);
-                provider.invalidate(&token).await;
+                provider.invalidate(&token).await?;
                 continue;
             }
             if status == StatusCode::TOO_MANY_REQUESTS {
@@ -1551,6 +1562,7 @@ mod tests {
             store.lease(slot),
             ApiSource::Shared,
             std::sync::Arc::new(|_| {}),
+            false,
         );
         // Verification can use a token in memory without persisting it yet.
         assert_eq!(tokens.access_token(None).await.unwrap(), "dummy-access");
@@ -1596,6 +1608,7 @@ mod tests {
             .lease(crate::credentials::Slot::Shared),
             ApiSource::Shared,
             Arc::new(|_| {}),
+            false,
         ))));
         client
     }
@@ -1646,6 +1659,58 @@ mod tests {
             tokens.access_token(Some("dummy-stale")).await.unwrap(),
             "dummy-access"
         );
+    }
+
+    /// A 401 whose refresh Spotify refuses reports the expired sign-in, so
+    /// the app asks for the browser instead of failing every request.
+    #[tokio::test]
+    async fn a_401_whose_refresh_is_refused_reports_the_expired_sign_in() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            while let Ok(Ok((mut socket, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    head.push(socket.read_u8().await.unwrap());
+                }
+                let head = String::from_utf8(head).unwrap();
+                let length = head
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("content-length:")
+                            .map(|n| n.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                socket.read_exact(&mut body).await.unwrap();
+                let line = head.lines().next().unwrap().to_string();
+                let reply: &[u8] = if line.starts_with("POST /token") {
+                    b"HTTP/1.1 400 Bad Request\r\nContent-Length: 25\r\nConnection: close\r\n\r\n{\"error\":\"invalid_grant\"}"
+                } else {
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                socket.write_all(reply).await.unwrap();
+                requests.push(line);
+            }
+            requests
+        });
+        crate::auth::TEST_TOKEN_URL
+            .with(|url| *url.borrow_mut() = Some(format!("{address}/token")));
+        let client = client_with_token(Some(address), "dummy-access");
+        let result = client.send(Method::GET, "/me", &[], None).await;
+        crate::auth::TEST_TOKEN_URL.with(|url| *url.borrow_mut() = None);
+        assert!(
+            matches!(result, Err(ApiError::SignInExpired { .. })),
+            "{result:?}"
+        );
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2, "{requests:?}");
+        assert!(requests[1].starts_with("POST /token"), "{requests:?}");
     }
 
     #[tokio::test]
@@ -1734,6 +1799,7 @@ mod tests {
                 .lease(crate::credentials::Slot::Shared),
                 ApiSource::Shared,
                 Arc::new(|_| {}),
+                false,
             ))));
             let mut uris = vec![
                 "spotify:track:a".into(),
@@ -1841,6 +1907,7 @@ mod tests {
                 .lease(crate::credentials::Slot::Shared),
                 ApiSource::Shared,
                 Arc::new(|_| {}),
+                false,
             ))));
             let result = client
                 .upload_playlist_cover("test-playlist", "/9j/test")

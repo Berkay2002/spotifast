@@ -243,6 +243,10 @@ fn run_control(control: Control) -> i32 {
     let printed = match single_instance::send(&verb) {
         Ok(single_instance::Reply::Ok) => return 0,
         Ok(single_instance::Reply::NowPlaying(snapshot)) => {
+            // The tabs between fields stay; anything else that would steer
+            // the terminal does not.
+            let snapshot = snapshot.split('\t').map(printable).collect::<Vec<_>>();
+            let snapshot = snapshot.join("\t");
             if raw {
                 format!("{snapshot}\n")
             } else {
@@ -251,7 +255,7 @@ fn run_control(control: Control) -> i32 {
         }
         Ok(single_instance::Reply::Devices(snapshot)) => {
             if raw {
-                format!("{snapshot}\n")
+                format!("{}\n", printable(&snapshot))
             } else {
                 format_devices(&snapshot)
             }
@@ -314,6 +318,16 @@ fn configure_pulseaudio_properties() {
     }
 }
 
+/// Titles and device names come from Spotify's catalogue and from devices
+/// on the network, so an escape sequence in one would reach the terminal as
+/// a command (a retitle, a cursor jump, a clipboard write). Every control
+/// character, C1 included, prints as U+FFFD instead.
+fn printable(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
 /// The `nowplaying` snapshot as one human-readable line.
 fn format_now_playing(snapshot: &str) -> String {
     let mut fields = snapshot.split('\t');
@@ -343,8 +357,9 @@ fn format_devices(snapshot: &str) -> String {
     let Ok(devices) = serde_json::from_str::<Vec<serde_json::Value>>(snapshot) else {
         return String::new();
     };
+    // JSON carries an escape as `\u001b`; decoded, it is a real one again.
     let field =
-        |device: &serde_json::Value, key: &str| device[key].as_str().unwrap_or_default().to_owned();
+        |device: &serde_json::Value, key: &str| printable(device[key].as_str().unwrap_or_default());
     devices
         .iter()
         .map(|device| {
@@ -481,9 +496,9 @@ pub(crate) fn run() -> eframe::Result<()> {
         log::warn!("unable to set the Dock icon: {error}");
     }
     let mut settings = settings::Settings::load(&dirs.settings_file());
-    if let Some(name) = cli.device_name {
-        settings.device_name = name;
-    }
+    let saved_device_name = cli
+        .device_name
+        .map(|name| std::mem::replace(&mut settings.device_name, name));
     fastframe_titlebar::init();
     fastframe_titlebar::set_enabled(settings.custom_titlebar);
     // Colour emoji: the fonts are found off this thread. A demo capture
@@ -492,6 +507,13 @@ pub(crate) fn run() -> eframe::Result<()> {
     spotifast::emoji::install(demo);
     #[cfg(not(feature = "demo"))]
     spotifast::emoji::install(false);
+    // The Winamp playlist's face: looked for off this thread, and before a
+    // demo capture's first frame so it never shows the stand-in.
+    #[cfg(feature = "demo")]
+    if demo {
+        let _ = spotifast::system_fonts::pledit_face();
+    }
+    spotifast::system_fonts::warm_up();
     // macOS delivers links as Apple Events; install before the event loop.
     #[cfg(target_os = "macos")]
     if let Some(guard) = &instance {
@@ -518,6 +540,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     let desktop_surfaces = options.media_controls;
     #[allow(unused_mut)]
     let mut app = app::App::new(&waker, dirs, settings, options);
+    app.saved_device_name = saved_device_name;
     if guarded {
         app.enable_desktop_themes();
     }
@@ -1543,6 +1566,25 @@ mod tests {
         );
 
         assert_eq!(missing_pulseaudio_properties(|_| true).count(), 0);
+    }
+
+    /// A title or device name carrying a terminal escape prints it as a
+    /// replacement character rather than handing it to the terminal.
+    #[test]
+    fn control_output_does_not_pass_escape_sequences_to_the_terminal() {
+        // #given
+        let devices = r#"[{"id":"abc","name":"Kitchen\u001b]52;c;aGk=\u0007","kind":"Speaker\u009b2J","active":true}]"#;
+
+        // #when
+        let listed = format_devices(devices);
+        let title = printable("Song\u{1b}[2J\u{9d}0;x\u{7}");
+
+        // #then
+        assert_eq!(
+            listed,
+            "* abc\tKitchen\u{FFFD}]52;c;aGk=\u{FFFD}\tSpeaker\u{FFFD}2J\n"
+        );
+        assert_eq!(title, "Song\u{FFFD}[2J\u{FFFD}0;x\u{FFFD}");
     }
 
     /// A link on the command line is a link, and a control verb is still a

@@ -357,7 +357,7 @@ fn search_text(text: &str) -> Option<String> {
 
 /// A Spotify Connect device id: the opaque hex-ish string the Web API hands
 /// out. Checked for the same reason as [`spotify_uri`].
-fn device_id(text: &str) -> Option<String> {
+pub(crate) fn device_id(text: &str) -> Option<String> {
     let shaped = !text.is_empty()
         && text.len() <= 64
         && text

@@ -87,7 +87,7 @@ pub(super) struct DjState {
     track: Option<(String, String, u32, u32)>,
     skips: Vec<Instant>,
     schedule_checked: Option<Instant>,
-    due: VecDeque<String>,
+    pub(super) due: VecDeque<String>,
 }
 
 fn id_of(uri: &str) -> Result<String, String> {
@@ -121,8 +121,11 @@ impl App {
     pub(super) fn handle_dj(&mut self) {
         self.dj.web = self.settings.dj_web;
         self.dj.locale = self.locale;
-        if let Some(id) = self.user_id().map(str::to_string) {
-            self.dj.set_account(&id);
+        // a scheduled task waiting to run belongs to the account that scheduled it
+        if let Some(id) = self.user_id().map(str::to_string)
+            && self.dj.set_account(&id)
+        {
+            self.dj_state.due.clear();
         }
         self.dj.poll();
         for pending in self.dj.take_calls() {
@@ -268,12 +271,9 @@ impl App {
 
     fn dj_call(&mut self, pending: PendingCall) {
         let PendingCall { call, reply } = pending;
-        // What lasts (a note, a scheduled task) is never made by a turn nobody is watching: text
-        // from a web page or a playlist name could have steered it.
-        if self.dj.unprompted() && matches!(call, Call::Remember { .. } | Call::ScheduleTask { .. })
-        {
+        if self.dj.unprompted() && refused_unprompted(&call) {
             let _ = reply.send(Err(
-                "Notes and schedules are only saved when the listener asks for them in a message."
+                "Notes and schedules are only changed when the listener asks for it in a message."
                     .to_string(),
             ));
             return;
@@ -1638,18 +1638,21 @@ impl App {
         } else {
             self.dj.feed.clear();
         }
-        if self
-            .dj_state
-            .schedule_checked
-            .is_none_or(|at| now.duration_since(at) >= SCHEDULE_EVERY)
+        if self.dj.busy || !self.dj.ready() {
+            return;
+        }
+        // a task is marked as run only when the DJ can run it now: one that falls due while the
+        // DJ cannot start waits on disk and lapses after its catch-up window instead of firing late
+        if self.dj_state.due.is_empty()
+            && self
+                .dj_state
+                .schedule_checked
+                .is_none_or(|at| now.duration_since(at) >= SCHEDULE_EVERY)
         {
             self.dj_state.schedule_checked = Some(now);
             for task in self.dj.schedules.due(&Moment::now()) {
                 self.dj_state.due.push_back(task.prompt);
             }
-        }
-        if self.dj.busy || !self.dj.ready() {
-            return;
         }
         let model = if self.settings.dj_background_model.is_empty() {
             self.settings.dj_model.clone()
@@ -1725,6 +1728,19 @@ impl App {
     }
 }
 
+/// Whether a turn nobody is watching is refused the call outright. What lasts (a note, a scheduled
+/// task) is never made or taken away by one: text from a web page or a playlist name could have
+/// steered it, and forgetting matches notes by substring, so one letter could clear them all.
+fn refused_unprompted(call: &Call) -> bool {
+    matches!(
+        call,
+        Call::Remember { .. }
+            | Call::ScheduleTask { .. }
+            | Call::Forget { .. }
+            | Call::CancelSchedule { .. }
+    )
+}
+
 /// Whether a call waits for the listener's yes. The library gate ("Ask before changing my
 /// library") covers every write; the rest are asked about whatever it says: what lasts (a note, a
 /// schedule), what takes something away (there is no undo), and everything done in a turn nobody
@@ -1744,6 +1760,105 @@ mod tests {
         }
     }
 
+    /// A task that falls due while the DJ cannot start is not used up: it keeps its last run and
+    /// waits for a check when the DJ can take it.
+    #[test]
+    fn a_task_due_while_the_dj_cannot_run_is_not_marked_as_run() {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-dj-schedule-test-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            super::super::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            super::super::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+            },
+        );
+        app.user = Some(crate::api::models::User {
+            id: "alice".into(),
+            ..Default::default()
+        });
+        app.dj.status = Some(crate::dj::Status {
+            installed: true,
+            logged_in: false,
+            account: None,
+            plan: None,
+            error: None,
+            version: None,
+        });
+        let now = Moment::now();
+        app.dj
+            .schedules
+            .add(
+                crate::dj::tools::Slot {
+                    cadence: crate::dj::tools::Cadence::Daily,
+                    minute: now.minute,
+                    weekday: None,
+                    date: None,
+                },
+                "morning mix",
+            )
+            .unwrap();
+        app.dj_background();
+        assert!(app.dj_state.due.is_empty());
+        let task = &app.dj.schedules.tasks()[0];
+        assert_eq!(task.last_run, None);
+    }
+
+    /// Another account signing in, however the last one ended (Sign out, a browser sign-in after
+    /// an expired grant, a sign-out the backend reports), ends the last one's conversation and
+    /// drops its waiting tasks; the same account coming back keeps them.
+    #[test]
+    fn another_account_does_not_inherit_the_djs_conversation_or_waiting_tasks() {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-dj-account-test-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            super::super::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            super::super::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+            },
+        );
+        let user = |id: &str| {
+            Some(crate::api::models::User {
+                id: id.into(),
+                ..Default::default()
+            })
+        };
+        // not ready, so the waiting task stays waiting and nothing is started
+        app.dj.status = Some(crate::dj::Status {
+            installed: true,
+            logged_in: false,
+            ..Default::default()
+        });
+        app.user = user("alice");
+        app.handle_dj();
+        app.dj.note("alice's chat".into());
+        app.dj_state.due.push_back("alice's task".into());
+        // the same account again (a reconnect) keeps both
+        app.handle_dj();
+        assert_eq!(app.dj.lines.len(), 1);
+        assert_eq!(app.dj_state.due.len(), 1);
+        app.user = user("bob");
+        app.handle_dj();
+        assert!(app.dj.lines.is_empty());
+        assert!(app.dj_state.due.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn writes_are_asked_about_by_the_gate_and_never_without_it_when_nobody_is_watching() {
         // the gate on: every write asks
@@ -1754,6 +1869,21 @@ mod tests {
         assert!(needs_asking(&like(), false, true));
         // reads never ask
         assert!(!needs_asking(&Call::Skip, true, true));
+    }
+
+    #[test]
+    fn the_djs_own_turns_can_neither_change_notes_nor_schedules() {
+        for call in [
+            Call::Remember { note: "x".into() },
+            Call::Forget { note: "e".into() },
+            Call::CancelSchedule { id: 1 },
+        ] {
+            assert!(refused_unprompted(&call), "{call:?}");
+        }
+        // reading them and every other call fall through to the usual rules
+        for call in [Call::Memory, Call::ListSchedules, Call::Skip, like()] {
+            assert!(!refused_unprompted(&call), "{call:?}");
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ pub mod layout;
 pub mod sprites;
 pub mod zip;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
@@ -45,8 +45,18 @@ pub struct Bitmap {
 impl Bitmap {
     /// Decodes a BMP or PNG, whatever the file was called: skins mislabel
     /// them. Anything unreadable is `None`, as Winamp silently skipped it.
+    /// Real sheets are a few hundred pixels a side, so one far larger than
+    /// that is skipped too, rather than inflating to gigabytes of pixels.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        let image = image::load_from_memory(bytes).ok()?.into_rgba8();
+        let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?;
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(MAX_SHEET_SIDE);
+        limits.max_image_height = Some(MAX_SHEET_SIDE);
+        limits.max_alloc = Some(MAX_SHEET_BYTES);
+        reader.limits(limits);
+        let image = reader.decode().ok()?.into_rgba8();
         Some(Self {
             width: image.width(),
             height: image.height(),
@@ -81,6 +91,19 @@ impl Bitmap {
 /// The files a skin is read from, keyed by lower-case file name.
 type Files = HashMap<String, Vec<u8>>;
 
+/// The most a whole skin may hold: the file read from disk, and everything
+/// inflated out of it. A classic skin is well under a megabyte.
+const SKIN_LIMIT: usize = 32 << 20;
+
+/// Refuses a file larger than any skin before it is read into memory.
+fn check_size(path: &Path, len: u64) -> Result<(), SkinError> {
+    if len > SKIN_LIMIT as u64 {
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        return Err(SkinError::Archive(zip::ZipError::TooLarge(name.into())));
+    }
+    Ok(())
+}
+
 pub struct Skin {
     /// The file or folder name, for showing which skin is on.
     pub name: String,
@@ -101,6 +124,7 @@ impl Skin {
         if path.is_dir() {
             Self::from_dir(name, path)
         } else {
+            check_size(path, std::fs::metadata(path)?.len())?;
             Self::from_archive(name, &std::fs::read(path)?)
         }
     }
@@ -115,16 +139,28 @@ impl Skin {
             other => SkinError::Archive(other),
         })?;
         let mut files = Files::new();
-        for entry in archive.entries() {
+        let mut tried = HashSet::new();
+        let mut total = 0;
+        // Walking backwards and keeping the first copy is the same as the
+        // last copy winning, but inflates each name once, whether or not it
+        // reads: a crafted archive can point thousands of entries at one
+        // large stream that fails only once it is inflated.
+        for entry in archive.entries().iter().rev() {
             if entry.is_dir() {
                 continue;
             }
             let file_name = entry.file_name();
-            if !wanted(&file_name) {
+            if !wanted(&file_name) || !tried.insert(file_name.clone()) {
                 continue;
             }
             match archive.read(entry) {
                 Ok(bytes) => {
+                    total += bytes.len();
+                    if total > SKIN_LIMIT {
+                        return Err(SkinError::Archive(zip::ZipError::TooLarge(
+                            entry.name.clone(),
+                        )));
+                    }
                     files.insert(file_name, bytes);
                 }
                 Err(error) => log::warn!("skin {name}: {error}"),
@@ -138,6 +174,7 @@ impl Skin {
     /// The nearest copy wins; equal-depth paths are read in name order.
     pub fn from_dir(name: impl Into<String>, dir: &Path) -> Result<Self, SkinError> {
         let mut files = Files::new();
+        let mut total = 0;
         let mut folders = VecDeque::from([(dir.to_path_buf(), 0)]);
         while let Some((folder, depth)) = folders.pop_front() {
             let mut entries = std::fs::read_dir(folder)?.collect::<Result<Vec<_>, _>>()?;
@@ -149,7 +186,11 @@ impl Skin {
                 } else if kind.is_file() {
                     let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                     if wanted(&file_name) && !files.contains_key(&file_name) {
-                        files.insert(file_name, std::fs::read(entry.path())?);
+                        check_size(&entry.path(), entry.metadata()?.len())?;
+                        let bytes = std::fs::read(entry.path())?;
+                        total += bytes.len();
+                        check_size(&entry.path(), total as u64)?;
+                        files.insert(file_name, bytes);
                     }
                 }
             }
@@ -256,6 +297,13 @@ impl Skin {
         Some((bitmap, clipped))
     }
 }
+
+/// The largest skin sheet decoded, per side and in decoded bytes. The
+/// largest classic sheet is under 500 px a side, and a 32-bit BMP of this
+/// size still fits under the archive's 8 MiB entry limit.
+const MAX_SHEET_SIDE: u32 = 1024;
+// Eight bytes a pixel, so a 16-bit RGBA PNG of the full size still decodes.
+const MAX_SHEET_BYTES: u64 = 8 * (MAX_SHEET_SIDE as u64) * (MAX_SHEET_SIDE as u64);
 
 /// Bound traversal of a selected unpacked skin folder.
 pub(crate) const MAX_SKIN_DEPTH: usize = 8;
@@ -393,6 +441,71 @@ mod tests {
     }
 
     #[test]
+    fn a_name_repeated_across_the_directory_is_inflated_once() {
+        let archive = zip::write(&[
+            ("main.bmp", &vec![0u8; 4 << 20], true),
+            ("main.bmp", &png(275, 116, [0, 20, 0]), false),
+        ]);
+        // Point a hundred more directory entries at the large first file.
+        let end = archive.len() - 22;
+        let directory =
+            u32::from_le_bytes(archive[end + 16..end + 20].try_into().unwrap()) as usize;
+        let record = &archive[directory..directory + 46 + "main.bmp".len()];
+        let mut crafted = archive[..directory].to_vec();
+        for _ in 0..100 {
+            crafted.extend_from_slice(record);
+        }
+        crafted.extend_from_slice(&archive[directory..end + 8]);
+        let count = (u16::from_le_bytes([archive[end + 8], archive[end + 9]]) + 100).to_le_bytes();
+        crafted.extend_from_slice(&count);
+        crafted.extend_from_slice(&count);
+        let size = (crafted.len() - directory - 12) as u32;
+        crafted.extend_from_slice(&size.to_le_bytes());
+        crafted.extend_from_slice(&(directory as u32).to_le_bytes());
+        crafted.extend_from_slice(&0u16.to_le_bytes());
+
+        let skin = Skin::from_archive("repeated", &crafted).unwrap();
+        assert_eq!(skin.sheet(Sheet::Main).pixel(5, 5), Some([0, 20, 0, 255]));
+    }
+
+    #[test]
+    fn a_name_whose_last_copy_cannot_be_read_is_not_tried_again() {
+        let mut archive = zip::write(&[
+            ("main.bmp", &png(275, 116, [10, 0, 0]), false),
+            ("main.bmp", &png(275, 116, [0, 20, 0]), false),
+        ]);
+        // Mark the last copy encrypted in the central directory.
+        let end = archive.len() - 22;
+        let directory =
+            u32::from_le_bytes(archive[end + 16..end + 20].try_into().unwrap()) as usize;
+        let last = directory + 46 + "main.bmp".len();
+        archive[last + 8] |= 1;
+
+        // The earlier copy is not read in its place, so nothing is left.
+        assert!(matches!(
+            Skin::from_archive("unreadable", &archive),
+            Err(SkinError::Empty)
+        ));
+    }
+
+    #[test]
+    fn a_skin_that_inflates_past_the_limit_is_refused() {
+        let zeros = vec![0u8; 6 << 20];
+        let names = [
+            "main", "cbuttons", "titlebar", "posbar", "volume", "balance",
+        ];
+        let names: Vec<String> = names.iter().map(|stem| format!("{stem}.bmp")).collect();
+        let entries: Vec<(&str, &[u8], bool)> = names
+            .iter()
+            .map(|name| (name.as_str(), zeros.as_slice(), true))
+            .collect();
+        assert!(matches!(
+            Skin::from_archive("huge", &zip::write(&entries)),
+            Err(SkinError::Archive(zip::ZipError::TooLarge(_)))
+        ));
+    }
+
+    #[test]
     fn a_real_bmp_decodes_whatever_it_is_called() {
         let archive = zip::write(&[("cbuttons.png", &bmp(136, 36, [4, 5, 6]), true)]);
         let skin = Skin::from_archive("bmp", &archive).unwrap();
@@ -441,6 +554,20 @@ mod tests {
         ]);
         let skin = Skin::from_archive("broken", &archive).unwrap();
         assert!(!skin.has(Sheet::CButtons));
+    }
+
+    #[test]
+    fn an_oversized_sheet_is_skipped_for_the_built_in_one() {
+        let archive = zip::write(&[
+            ("main.bmp", &png(275, 116, [1, 1, 1]), false),
+            ("cbuttons.bmp", &png(MAX_SHEET_SIDE + 1, 1, [2, 2, 2]), true),
+        ]);
+        let skin = Skin::from_archive("huge", &archive).unwrap();
+        assert!(!skin.has(Sheet::CButtons));
+        assert_eq!(
+            skin.sheet(Sheet::CButtons),
+            Skin::builtin().sheet(Sheet::CButtons)
+        );
     }
 
     #[test]
@@ -521,6 +648,22 @@ mod tests {
         let skin = Skin::load(&dir).unwrap();
         assert_eq!(skin.sheet(Sheet::Main).pixel(1, 1), Some([4, 5, 6, 255]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unpacked_skin_larger_than_the_limit_is_refused() {
+        let dir = std::env::temp_dir().join(format!("spotifast-skin-total-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let large = vec![0u8; SKIN_LIMIT / 4 + 1];
+        for stem in ["main", "cbuttons", "titlebar", "posbar"] {
+            std::fs::write(dir.join(format!("{stem}.bmp")), &large).unwrap();
+        }
+        let result = Skin::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(
+            result,
+            Err(SkinError::Archive(zip::ZipError::TooLarge(_)))
+        ));
     }
 
     #[cfg(unix)]

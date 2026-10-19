@@ -97,8 +97,9 @@ is kept beside it as `<name>.corrupt-<time>` instead of being overwritten.
 **Autopilot** (off by default) lets the DJ act without a message from you
 while Spotifast is open: it tops up a queue that runs low and reacts when
 you skip two songs in a row. It runs at most once a minute and can use a
-smaller **Background model** to spare your plan. It never saves notes or
-schedules on its own, and its library changes still wait for you.
+smaller **Background model** to spare your plan. It never saves, forgets or
+cancels notes or schedules on its own, and its library changes still wait
+for you.
 
 ## The web
 
@@ -111,7 +112,8 @@ the DJ to Spotify only.
 - Claude Code runs with none of its own tools (no files, no shell) except
   the optional web search. Spotifast's tools reach it through a server on
   `127.0.0.1` on a random port, protected by a one-time token that never
-  appears on a command line.
+  appears on a command line. It sits in a file in a folder only your user
+  account can open, even when the temp folder is shared.
 - No user, project or plugin settings of yours are loaded into it.
 - Each tool call is checked (types, counts, URIs by kind) before the app
   acts on it.

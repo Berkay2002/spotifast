@@ -143,6 +143,8 @@ struct Inner {
     http: Http,
     runtime: tokio::runtime::Handle,
     cache_dir: PathBuf,
+    /// What the last clearing of the disk cache removed, until it is taken.
+    cleared: Mutex<Option<std::io::Result<u64>>>,
 }
 
 #[derive(Clone)]
@@ -164,6 +166,7 @@ impl ArtLoader {
                 http: http.into(),
                 runtime,
                 cache_dir,
+                cleared: Mutex::new(None),
             }),
         }
     }
@@ -361,17 +364,43 @@ impl ArtLoader {
             .is_some_and(|copies| !copies.is_empty())
     }
 
-    pub fn clear_disk_cache(&self) -> std::io::Result<u64> {
-        let mut removed = 0;
-        for entry in std::fs::read_dir(&self.inner.cache_dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_file() {
-                removed += entry.metadata().map(|m| m.len()).unwrap_or(0);
-                let _ = std::fs::remove_file(entry.path());
+    /// Deletes the cached artwork files off the UI thread. The bytes removed,
+    /// or the error, come back through `take_cleared`, and `ctx` is woken
+    /// to read them.
+    pub fn clear_disk_cache(&self, ctx: &egui::Context) {
+        let inner = Arc::clone(&self.inner);
+        let ctx = ctx.clone();
+        self.inner.runtime.spawn_blocking(move || {
+            let result = remove_cached_files(&inner.cache_dir);
+            *inner.cleared.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
+            ctx.request_repaint();
+        });
+    }
+
+    /// What a finished `clear_disk_cache` removed, once.
+    pub fn take_cleared(&self) -> Option<std::io::Result<u64>> {
+        self.inner
+            .cleared
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take()
+    }
+}
+
+fn remove_cached_files(dir: &Path) -> std::io::Result<u64> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            let len = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            // Only what is really gone counts as freed.
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed += len,
+                Err(error) => log::warn!("could not remove a cached image: {error}"),
             }
         }
-        Ok(removed)
     }
+    Ok(removed)
 }
 
 /// Deletes the stale `.part` files in `dir`, then, if the rest add up to more

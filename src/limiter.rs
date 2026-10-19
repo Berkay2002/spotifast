@@ -8,6 +8,7 @@
 //! - A soft knee introduces gain reduction gradually.
 //! - A -1 dBFS threshold leaves room for inter-sample peaks after resampling.
 //! - Eight milliseconds of look-ahead lets gain settle before a peak arrives.
+//!   Each peak's reduction is held for that long, so a brief one is caught too.
 //!
 //! Samples below the knee pass unchanged. A final clamp only guards against
 //! numerical overshoot.
@@ -64,6 +65,11 @@ pub struct Limiter {
     release: f64,
     /// Delayed frames, oldest first. Initial silence preserves block lengths.
     held: std::collections::VecDeque<[f64; 2]>,
+    /// Ascending targets of the frames still in the delay line, each with the
+    /// frame count at which it leaves, so the front is the window's minimum.
+    targets: std::collections::VecDeque<(u64, f64)>,
+    /// Frames processed so far.
+    position: u64,
 }
 
 impl Limiter {
@@ -74,6 +80,8 @@ impl Limiter {
             attack: coefficient(ATTACK_MS, sample_rate),
             release: coefficient(RELEASE_MS, sample_rate),
             held: std::collections::VecDeque::from(vec![[0.0; 2]; lookahead]),
+            targets: std::collections::VecDeque::new(),
+            position: 0,
         }
     }
 
@@ -87,13 +95,29 @@ impl Limiter {
         }
         let threshold_db = to_db(full_scale) + THRESHOLD_DB;
         let ceiling = full_scale;
+        let window = self.held.len() as u64;
         for frame in frames.chunks_mut(2) {
-            // Calculate gain from the incoming frame and apply it to the
-            // delayed frame. Use the louder channel for both channels.
+            // Calculate gain from the incoming frame. Use the louder channel
+            // for both channels.
             let peak = frame
                 .iter()
                 .fold(0.0f64, |loudest, sample| loudest.max(sample.abs()));
             let target = from_db(-reduction_db(to_db(peak) - threshold_db));
+            // Hold the lowest target until its frame leaves the delay line,
+            // so the gain has reached it by then however short the peak.
+            while self.targets.back().is_some_and(|&(_, held)| held >= target) {
+                self.targets.pop_back();
+            }
+            self.targets.push_back((self.position + window, target));
+            while self
+                .targets
+                .front()
+                .is_some_and(|&(leaves, _)| leaves < self.position)
+            {
+                self.targets.pop_front();
+            }
+            self.position += 1;
+            let target = self.targets.front().map_or(target, |&(_, held)| held);
             // Reduce gain quickly and restore it slowly.
             let coefficient = if target < self.gain {
                 self.attack
@@ -163,6 +187,28 @@ mod tests {
         limiter.process(&mut samples, 1.0);
         // Exponential smoothing approaches but does not reach its target. The
         // first sample may slightly exceed the threshold but not the ceiling.
+        let loudest = peak(&samples);
+        assert!(
+            loudest < 0.95,
+            "the gain was down in time and the clamp never fired: {loudest}"
+        );
+        assert!(
+            loudest > from_db(THRESHOLD_DB),
+            "and it really did have to limit: {loudest}"
+        );
+    }
+
+    /// A peak much shorter than the look-ahead is still fully turned down by
+    /// the time it leaves, so the clamp never has to clip it.
+    #[test]
+    fn a_short_burst_is_caught_without_clipping() {
+        let mut limiter = Limiter::new(RATE);
+        let mut samples = tone(0.0, DELAY);
+        // One millisecond at four times full scale, then silence.
+        samples.extend(tone(4.0, 44));
+        samples.extend(tone(0.0, DELAY * 2));
+        limiter.process(&mut samples, 1.0);
+        // A clamped sample would sit exactly at the ceiling.
         let loudest = peak(&samples);
         assert!(
             loudest < 0.95,

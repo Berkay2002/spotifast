@@ -8,7 +8,7 @@
 //! length is the strongest signal for distinguishing versions with the same
 //! title.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -101,14 +101,26 @@ pub fn from_spotify(json: &serde_json::Value) -> Option<Lyrics> {
     })
 }
 
-/// The cached answer at `path`, while it is fresh.
-pub fn cached(path: &Path) -> Option<Option<Lyrics>> {
-    read_cache(&path.to_path_buf())
+/// The cached answer at `path`, while it is fresh. Read on a file worker,
+/// so the runtime thread does not wait for the disk.
+pub async fn cached(path: &Path) -> Option<Option<Lyrics>> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || read_cache(&path))
+        .await
+        .ok()
+        .flatten()
 }
 
-/// Remember an answer at `path`, `None` included.
-pub fn store(path: &Path, found: &Option<Lyrics>) {
-    write_cache(path, found);
+/// Remember an answer at `path`, `None` included. The file is replaced
+/// atomically on a file worker, so a cut-short write leaves no torn entry.
+pub async fn store(path: &Path, found: &Option<Lyrics>) {
+    let Ok(bytes) = serde_json::to_vec(&Cached {
+        found: found.clone(),
+    }) else {
+        return;
+    };
+    let path = path.to_owned();
+    let _ = tokio::task::spawn_blocking(move || fastframe_file::write(&path, bytes)).await;
 }
 
 /// Fetches lyrics for `query`, using the disk cache when available.
@@ -118,11 +130,11 @@ pub async fn fetch(
     query: &Query,
 ) -> Result<Option<Lyrics>> {
     let cache_path = cache_dir.join(format!("{}.json", cache_key(query)));
-    if let Some(cached) = read_cache(&cache_path) {
+    if let Some(cached) = cached(&cache_path).await {
         return Ok(cached);
     }
     let found = lookup(http, query).await?;
-    write_cache(&cache_path, &found);
+    store(&cache_path, &found).await;
     Ok(found)
 }
 
@@ -563,7 +575,11 @@ fn leading_stamp(text: &str) -> Option<(u32, usize)> {
         Some(_) => return None,
         None => 0,
     };
-    Some((minutes * 60_000 + seconds * 1_000 + fraction_ms, close + 2))
+    let at_ms = minutes
+        .checked_mul(60_000)?
+        .checked_add(seconds.checked_mul(1_000)?)?
+        .checked_add(fraction_ms)?;
+    Some((at_ms, close + 2))
 }
 
 // ---- cache ------------------------------------------------------------------
@@ -584,7 +600,7 @@ fn cache_key(query: &Query) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn read_cache(path: &PathBuf) -> Option<Option<Lyrics>> {
+fn read_cache(path: &Path) -> Option<Option<Lyrics>> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
     if modified.elapsed().unwrap_or(CACHE_LIFETIME) >= CACHE_LIFETIME {
         return None;
@@ -595,20 +611,35 @@ fn read_cache(path: &PathBuf) -> Option<Option<Lyrics>> {
         .map(|cached| cached.found)
 }
 
-fn write_cache(path: &Path, found: &Option<Lyrics>) {
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(text) = serde_json::to_string(&Cached {
-        found: found.clone(),
-    }) {
-        let _ = std::fs::write(path, text);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_cached_answer_is_replaced_whole_in_a_folder_made_for_it() {
+        let root = std::env::temp_dir().join(format!(
+            "spotifast-lyrics-cache-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let path = root.join("lyrics").join("track.json");
+        let found = Some(Lyrics {
+            lines: vec![Line {
+                at_ms: Some(1_000),
+                text: "words".into(),
+            }],
+            synced: true,
+            instrumental: false,
+        });
+        assert_eq!(cached(&path).await, None);
+        store(&path, &found).await;
+        assert_eq!(cached(&path).await, Some(found));
+        // "None found" is an answer too, and it replaces the old one.
+        store(&path, &None).await;
+        assert_eq!(cached(&path).await, Some(None));
+        assert!(!path.with_extension("json.tmp").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn a_featuring_is_cut_where_it_starts_whatever_the_case_costs() {
@@ -710,6 +741,14 @@ mod tests {
         assert_eq!(lines[0].text, "Early");
         assert_eq!(lines[2].text, "Twice");
         assert_eq!(lines[3].text, "Twice");
+    }
+
+    #[test]
+    fn an_oversized_lrc_stamp_is_skipped() {
+        let lines = parse_lrc("[00:05]Early\n[99999:00.00]Huge\n[00:10]Later");
+        let times: Vec<u32> = lines.iter().filter_map(|line| line.at_ms).collect();
+        assert_eq!(times, vec![5_000, 10_000]);
+        assert!(lines.iter().all(|line| line.text != "Huge"));
     }
 
     #[test]

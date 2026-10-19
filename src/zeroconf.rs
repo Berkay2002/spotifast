@@ -28,6 +28,9 @@ const FIXED_IV: [u8; 16] = [
     253, 81, 222, 19, 70, 203, 45, 89, 141, 68, 210, 240, 93, 20, 76, 30,
 ];
 const HTTP_TIMEOUT: Duration = Duration::from_secs(6);
+/// Any LAN host can answer, so a reply is read only this far (Cast caps its
+/// frames the same way). Real `getInfo` and `addUser` replies are under 2 KiB.
+const MAX_REPLY: u64 = 64 * 1024;
 
 type HmacSha1 = Hmac<Sha1>;
 type Aes128Ctr = ctr::Ctr128BE<aes::Aes128>;
@@ -223,7 +226,23 @@ fn get_info_with_timeout(
     if !response.status().is_success() {
         bail!("receiver answered {}", response.status());
     }
-    response.json().context("receiver sent an unreadable reply")
+    read_reply(response)
+}
+
+/// Parses a receiver's JSON reply, refusing one larger than `MAX_REPLY`.
+/// The limit applies after reqwest's gzip decoding, so a compressed bomb
+/// stops there too.
+fn read_reply<T: serde::de::DeserializeOwned>(response: reqwest::blocking::Response) -> Result<T> {
+    use std::io::Read;
+    let mut body = Vec::new();
+    response
+        .take(MAX_REPLY + 1)
+        .read_to_end(&mut body)
+        .context("receiver sent an unreadable reply")?;
+    if body.len() as u64 > MAX_REPLY {
+        bail!("receiver sent an oversized reply");
+    }
+    serde_json::from_slice(&body).context("receiver sent an unreadable reply")
 }
 
 /// Resolve advertisements before offering them as playback targets. This
@@ -255,15 +274,21 @@ pub fn resolve_receivers(receivers: Vec<Receiver>) -> Result<Vec<Receiver>> {
                     ) else {
                         continue;
                     };
-                    if info.device_id.trim().is_empty() || info.remote_name.trim().is_empty() {
+                    // The id goes into spclient paths sent with the user's
+                    // token, so a LAN answer must not carry '/', '?' or '#'.
+                    let Some(device_id) = crate::single_instance::device_id(&info.device_id) else {
+                        log::debug!("skipping a receiver with a malformed device id");
+                        continue;
+                    };
+                    if info.remote_name.trim().is_empty() {
                         continue;
                     }
                     receiver.name = info.remote_name;
-                    receiver.device_id = Some(info.device_id.clone());
+                    receiver.device_id = Some(device_id.clone());
                     found
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .entry(info.device_id)
+                        .entry(device_id)
                         .or_insert(receiver);
                 }
             });
@@ -324,9 +349,7 @@ pub fn add_user(
         .form(&form)
         .send()
         .context("receiver did not accept the connection")?;
-    let reply: AddUserReply = response
-        .json()
-        .context("receiver sent an unreadable reply")?;
+    let reply: AddUserReply = read_reply(response)?;
     // 101 is this interface's "OK".
     if reply.status == 101 {
         return Ok(());
@@ -610,13 +633,54 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_receiver_reply_is_refused() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            for size in [MAX_REPLY as usize, MAX_REPLY as usize + 1] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                std::io::BufReader::new(&mut stream)
+                    .read_line(&mut line)
+                    .unwrap();
+                // Valid JSON padded with whitespace to exactly `size` bytes.
+                let json = r#"{"deviceID":"one","remoteName":"Living Room"}"#;
+                let body = format!("{json}{}", " ".repeat(size - json.len()));
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let receiver = Receiver {
+            name: "House".into(),
+            device_id: None,
+            address: "127.0.0.1".parse().unwrap(),
+            port,
+            path: "/".into(),
+            cast: false,
+        };
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let timeout = Duration::from_secs(5);
+        let info = get_info_with_timeout(&http, &receiver, timeout).unwrap();
+        assert_eq!(info.device_id, "one");
+        assert!(get_info_with_timeout(&http, &receiver, timeout).is_err());
+        server.join().unwrap();
+    }
+
+    #[test]
     fn discovery_uses_receiver_names_and_ids_and_omits_dead_advertisements() {
         use std::io::{BufRead, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let deadline = std::time::Instant::now() + Duration::from_secs(3);
                 let (mut stream, _) = loop {
                     match listener.accept() {
@@ -644,6 +708,11 @@ mod tests {
                 assert!(line.contains("action=getInfo"));
                 let (status, body) = if line.contains("/dead?") {
                     ("503 Service Unavailable", "{}")
+                } else if line.contains("/spoof?") {
+                    (
+                        "200 OK",
+                        r#"{"deviceID":"../../x?y#z","remoteName":"Living Room"}"#,
+                    )
                 } else if line.contains("/other?") {
                     ("200 OK", r#"{"deviceID":"two","remoteName":"Living Room"}"#)
                 } else {
@@ -652,7 +721,7 @@ mod tests {
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        let mut receivers: Vec<_> = ["first", "duplicate", "other", "dead"]
+        let mut receivers: Vec<_> = ["first", "duplicate", "other", "dead", "spoof"]
             .map(|path| Receiver {
                 name: format!("SpotifyConnect-{path}"),
                 device_id: None,

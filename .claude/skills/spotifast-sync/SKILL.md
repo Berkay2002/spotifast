@@ -40,9 +40,15 @@ the user present. Where the steps say "ask", see "When a decision is needed".
 
 1. **Is there anything new?** The target is the newest commit on crmne's
    `main` whose CI passed, so a half-finished push is never merged:
-   `SHA=$(gh api "repos/crmne/spotifast/actions/workflows/ci.yml/runs?branch=main&status=success&per_page=1" --jq '.workflow_runs[0].head_sha')`
+   `SHA=$(gh api "repos/crmne/spotifast/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=20" --jq '[.workflow_runs[] | select(.head_repository.full_name=="crmne/spotifast")][0].head_sha')`
    (REST works everywhere; `gh release` and `gh issue` use GraphQL, which a
-   cloud session can't reach). Fetch as above and let `REF=${SHA:0:7}`. If
+   cloud session can't reach). The `event` and `head_repository` filters
+   matter: `branch=main` also matches pull requests from a contributor's
+   fork whose branch is called `main`, and that code is unreviewed. Fetch as
+   above and let `REF=${SHA:0:7}`. Then require
+   `git merge-base --is-ancestor "$SHA" refs/crmne/main`: if it fails (or
+   `$SHA` is empty), stop and report it. Never fetch a commit by SHA or from
+   `refs/pull/*`; only what is on crmne's `main` is merged. If
    `git merge-base --is-ancestor $SHA main`, it is merged already: report
    "up to date with crmne $REF" and stop. Note which crmne release tags the
    merge brings in: `git tag -l` won't show them, so use

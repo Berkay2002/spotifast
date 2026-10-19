@@ -173,6 +173,11 @@ pub struct HomeSettings {
     pub made_for_you: bool,
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct LibrarySidebar {
+    pub albums: bool,
+}
+
 #[derive(Serialize)]
 #[serde(default)]
 pub struct Settings {
@@ -186,11 +191,17 @@ pub struct Settings {
     pub theme_cache: Option<
         crate::theme::CustomTheme,
     >,
-    pub home: HomeSettings,{extra}
+    pub home: HomeSettings,
+    pub library_sidebar: LibrarySidebar,{extra}
 }
 
 pub struct SessionState {
     pub queue: Vec<String>,
+    pub window: WindowMode,
+}
+
+pub struct WindowMode {
+    pub maximized: bool,
 }
 """
 
@@ -203,7 +214,11 @@ class NewSettingsTest(unittest.TestCase):
     def test_the_fields_of_each_settings_struct_are_found(self):
         self.assertEqual(
             settings.fields(settings_source("")),
-            {"HomeSettings": {"made_for_you"}, "Settings": {"device_name", "theme_cache", "home"}},
+            {
+                "HomeSettings": {"made_for_you"},
+                "LibrarySidebar": {"albums"},
+                "Settings": {"device_name", "theme_cache", "home", "library_sidebar"},
+            },
         )
 
     def test_an_unchanged_or_smaller_settings_struct_passes(self):
@@ -220,6 +235,27 @@ class NewSettingsTest(unittest.TestCase):
             "pub made_for_you: bool,", "pub made_for_you: bool,\n    pub(crate) radio: bool,"
         )
         self.assertEqual(settings.added(settings_source(""), head), [("HomeSettings", "radio")])
+
+    def test_a_field_in_any_struct_settings_holds_counts(self):
+        head = settings_source("\n    pub(crate) mini: MiniPlayer,").replace(
+            "pub albums: bool,", "pub albums: bool,\n    pub artists: bool,"
+        ) + "\npub(crate) struct MiniPlayer {\n    pub on_top: bool,\n}\n"
+        self.assertEqual(
+            settings.added(settings_source(""), head),
+            [("LibrarySidebar", "artists"), ("MiniPlayer", "on_top"), ("Settings", "mini")],
+        )
+
+    def test_a_field_in_a_private_struct_settings_holds_counts(self):
+        head = settings_source("\n    pub crossfade: Crossfade,") + "\nstruct Crossfade {\n    seconds: u8,\n}\n"
+        self.assertEqual(
+            settings.added(settings_source(""), head),
+            [("Crossfade", "seconds"), ("Settings", "crossfade")],
+        )
+
+    def test_a_struct_only_session_state_holds_does_not_count(self):
+        base = settings_source("")
+        head = base.replace("pub maximized: bool,", "pub maximized: bool,\n    pub fullscreen: bool,")
+        self.assertEqual(settings.added(base, head), [])
 
     def test_a_renamed_field_counts_and_session_state_does_not(self):
         base = settings_source("")
