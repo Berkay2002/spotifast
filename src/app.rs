@@ -2664,6 +2664,9 @@ impl App {
             .is_some_and(|sequence| sequence != state.track_sequence)
         {
             self.local_transfer_sequence = None;
+            // The transfer's first song is the handoff however long Connect
+            // took to deliver it, so it must not consume a queued copy.
+            self.queue_start_pending = Some((Target::Local, Instant::now()));
         }
         if state.track_sequence != self.local.track_sequence
             && matches!(self.target(), Target::Local)
@@ -21662,6 +21665,81 @@ mod tests {
                 app.backend.shutdown();
             }
         }
+    }
+
+    /// Connect can take longer than `PLAYBACK_HOLD` to deliver the
+    /// transferred song. Its arrival is still the handoff, so a queued
+    /// copy of that song stays in Playing next.
+    #[test]
+    fn a_slow_transfer_back_still_keeps_a_queued_copy_of_its_song() {
+        let mut app = test_app("transfer-back-slow");
+        app.local_ready = true;
+        app.local_device_id = Some("this-computer".into());
+        app.local = LocalState {
+            connected: true,
+            playback: Playback::Stopped,
+            track: Some(crate::player::LocalTrack {
+                uri: "spotify:track:bellaire".into(),
+                ..Default::default()
+            }),
+            track_sequence: 3,
+            ..Default::default()
+        };
+        app.selected_device = Some("phone".into());
+        app.remote = Some(RemoteSnapshot {
+            state: PlaybackState {
+                is_playing: true,
+                item: Some(queued_song("spotify:track:metallica")),
+                device: Some(crate::api::models::Device {
+                    id: Some("phone".into()),
+                    is_active: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            received_at: Instant::now(),
+        });
+        app.on_now_playing_changed();
+        let upcoming = ["spotify:track:metallica", "spotify:track:context"];
+        app.queue = loaded_queue("spotify:track:metallica", &upcoming);
+        app.manual_queue = vec!["spotify:track:metallica".into()];
+        app.transfer("this-computer".into());
+        app.handle_local(LocalState {
+            playback: Playback::Loading,
+            ..app.local.clone()
+        });
+        // Connect is slow: the transferred song arrives after the hold.
+        let (target, _) = app.queue_start_pending.take().expect("a start is marked");
+        app.queue_start_pending = Some((
+            target,
+            Instant::now() - PLAYBACK_HOLD - Duration::from_secs(1),
+        ));
+        let transferred = LocalState {
+            connected: true,
+            playback: Playback::Playing,
+            track: Some(crate::player::LocalTrack {
+                uri: "spotify:track:metallica".into(),
+                ..Default::default()
+            }),
+            track_sequence: 4,
+            ..Default::default()
+        };
+        app.handle_local(transferred.clone());
+        assert_eq!(
+            app.manual_queue,
+            ["spotify:track:metallica"],
+            "handoff does not consume a queued copy"
+        );
+        assert_eq!(queue_uris(&app).1, upcoming);
+
+        // The queued copy then plays in its turn and leaves.
+        app.handle_local(LocalState {
+            track_sequence: 5,
+            ..transferred
+        });
+        assert!(app.manual_queue.is_empty());
+        assert_eq!(queue_uris(&app).1, ["spotify:track:context"]);
+        app.backend.shutdown();
     }
 
     #[test]
