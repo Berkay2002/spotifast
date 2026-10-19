@@ -255,15 +255,21 @@ pub fn resolve_receivers(receivers: Vec<Receiver>) -> Result<Vec<Receiver>> {
                     ) else {
                         continue;
                     };
-                    if info.device_id.trim().is_empty() || info.remote_name.trim().is_empty() {
+                    // The id goes into spclient paths sent with the user's
+                    // token, so a LAN answer must not carry '/', '?' or '#'.
+                    let Some(device_id) = crate::single_instance::device_id(&info.device_id) else {
+                        log::debug!("skipping a receiver with a malformed device id");
+                        continue;
+                    };
+                    if info.remote_name.trim().is_empty() {
                         continue;
                     }
                     receiver.name = info.remote_name;
-                    receiver.device_id = Some(info.device_id.clone());
+                    receiver.device_id = Some(device_id.clone());
                     found
                         .lock()
                         .unwrap_or_else(|p| p.into_inner())
-                        .entry(info.device_id)
+                        .entry(device_id)
                         .or_insert(receiver);
                 }
             });
@@ -616,7 +622,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
-            for _ in 0..4 {
+            for _ in 0..5 {
                 let deadline = std::time::Instant::now() + Duration::from_secs(3);
                 let (mut stream, _) = loop {
                     match listener.accept() {
@@ -644,6 +650,11 @@ mod tests {
                 assert!(line.contains("action=getInfo"));
                 let (status, body) = if line.contains("/dead?") {
                     ("503 Service Unavailable", "{}")
+                } else if line.contains("/spoof?") {
+                    (
+                        "200 OK",
+                        r#"{"deviceID":"../../x?y#z","remoteName":"Living Room"}"#,
+                    )
                 } else if line.contains("/other?") {
                     ("200 OK", r#"{"deviceID":"two","remoteName":"Living Room"}"#)
                 } else {
@@ -652,7 +663,7 @@ mod tests {
                 write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
             }
         });
-        let mut receivers: Vec<_> = ["first", "duplicate", "other", "dead"]
+        let mut receivers: Vec<_> = ["first", "duplicate", "other", "dead", "spoof"]
             .map(|path| Receiver {
                 name: format!("SpotifyConnect-{path}"),
                 device_id: None,
