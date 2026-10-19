@@ -496,9 +496,9 @@ pub(crate) fn run() -> eframe::Result<()> {
         log::warn!("unable to set the Dock icon: {error}");
     }
     let mut settings = settings::Settings::load(&dirs.settings_file());
-    if let Some(name) = cli.device_name {
-        settings.device_name = name;
-    }
+    let saved_device_name = cli
+        .device_name
+        .map(|name| std::mem::replace(&mut settings.device_name, name));
     fastframe_titlebar::init();
     fastframe_titlebar::set_enabled(settings.custom_titlebar);
     // Colour emoji: the fonts are found off this thread. A demo capture
@@ -533,6 +533,7 @@ pub(crate) fn run() -> eframe::Result<()> {
     let desktop_surfaces = options.media_controls;
     #[allow(unused_mut)]
     let mut app = app::App::new(&waker, dirs, settings, options);
+    app.saved_device_name = saved_device_name;
     if guarded {
         app.enable_desktop_themes();
     }

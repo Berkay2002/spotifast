@@ -262,6 +262,10 @@ struct Listening {
 pub struct App {
     pub dirs: AppDirs,
     pub settings: Settings,
+    /// The Connect name in the settings file while `--device-name` names this
+    /// session: saves write it back, so the one-off name never persists.
+    /// Editing the name in Settings clears it, and that edit is saved.
+    pub saved_device_name: Option<String>,
     /// Proxy policy actually handed to network workers. Manual form edits are
     /// drafts until Apply (or Sign in), so unrelated downloads and engine
     /// restarts must not observe them early.
@@ -885,6 +889,7 @@ impl App {
             custom_themes: theme::Catalog::default(),
             dirs,
             settings,
+            saved_device_name: None,
             applied_proxy,
             applied_proxy_preferences,
             pending_proxy_preferences: HashMap::new(),
@@ -3664,6 +3669,9 @@ impl App {
         }
         let mut saved = self.settings.clone();
         self.applied_proxy_preferences.apply_to(&mut saved);
+        if let Some(name) = &self.saved_device_name {
+            saved.device_name = name.clone();
+        }
         if let Some(text) = saved.encode() {
             self.files.write(
                 &self.dirs.settings_file(),
@@ -25979,6 +25987,32 @@ mod tests {
         );
         app.flush_files();
         assert_eq!(Settings::load(&app.dirs.settings_file()).proxy_port, "8080");
+        app.backend.shutdown();
+    }
+
+    /// `--device-name` names this session only: saving other settings keeps
+    /// the file's Connect name, and only an edit in Settings replaces it.
+    #[test]
+    fn a_command_line_device_name_is_never_saved() {
+        let mut app = test_app("device-name-override");
+        app.backend.set_offline(true);
+        app.saved_device_name = Some("Desk".into());
+        app.settings.device_name = "Tonight".into();
+        app.settings.theme = ThemeChoice::Light;
+        app.save_settings();
+        app.flush_files();
+        let saved = Settings::load(&app.dirs.settings_file());
+        assert_eq!(saved.device_name, "Desk");
+        assert_eq!(saved.theme, ThemeChoice::Light);
+        assert_eq!(app.settings.device_name, "Tonight");
+        // Editing the name in Settings clears the override.
+        app.saved_device_name = None;
+        app.save_settings();
+        app.flush_files();
+        assert_eq!(
+            Settings::load(&app.dirs.settings_file()).device_name,
+            "Tonight"
+        );
         app.backend.shutdown();
     }
 

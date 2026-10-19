@@ -666,6 +666,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     })
                     .inner;
                 if response.changed() {
+                    app.saved_device_name = None;
                     changed = true;
                     playback_dirty = true;
                 }
