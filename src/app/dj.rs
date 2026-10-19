@@ -121,8 +121,11 @@ impl App {
     pub(super) fn handle_dj(&mut self) {
         self.dj.web = self.settings.dj_web;
         self.dj.locale = self.locale;
-        if let Some(id) = self.user_id().map(str::to_string) {
-            self.dj.set_account(&id);
+        // a scheduled task waiting to run belongs to the account that scheduled it
+        if let Some(id) = self.user_id().map(str::to_string)
+            && self.dj.set_account(&id)
+        {
+            self.dj_state.due.clear();
         }
         self.dj.poll();
         for pending in self.dj.take_calls() {
@@ -1806,6 +1809,54 @@ mod tests {
         assert!(app.dj_state.due.is_empty());
         let task = &app.dj.schedules.tasks()[0];
         assert_eq!(task.last_run, None);
+    }
+
+    /// Another account signing in, however the last one ended (Sign out, a browser sign-in after
+    /// an expired grant, a sign-out the backend reports), ends the last one's conversation and
+    /// drops its waiting tasks; the same account coming back keeps them.
+    #[test]
+    fn another_account_does_not_inherit_the_djs_conversation_or_waiting_tasks() {
+        let root =
+            std::env::temp_dir().join(format!("spotifast-dj-account-test-{}", std::process::id()));
+        let mut app = App::new(
+            &crate::backend::Waker::default(),
+            super::super::AppDirs {
+                config: root.join("config"),
+                state: root.join("state"),
+                cache: root.join("cache"),
+            },
+            crate::settings::Settings::default(),
+            super::super::AppOptions {
+                media_controls: false,
+                restore_sign_in: false,
+                tray: false,
+            },
+        );
+        let user = |id: &str| {
+            Some(crate::api::models::User {
+                id: id.into(),
+                ..Default::default()
+            })
+        };
+        // not ready, so the waiting task stays waiting and nothing is started
+        app.dj.status = Some(crate::dj::Status {
+            installed: true,
+            logged_in: false,
+            ..Default::default()
+        });
+        app.user = user("alice");
+        app.handle_dj();
+        app.dj.note("alice's chat".into());
+        app.dj_state.due.push_back("alice's task".into());
+        // the same account again (a reconnect) keeps both
+        app.handle_dj();
+        assert_eq!(app.dj.lines.len(), 1);
+        assert_eq!(app.dj_state.due.len(), 1);
+        app.user = user("bob");
+        app.handle_dj();
+        assert!(app.dj.lines.is_empty());
+        assert!(app.dj_state.due.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

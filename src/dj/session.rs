@@ -230,13 +230,21 @@ impl Dj {
     /// Opens the notes, schedules and saved chats of the signed-in account. The newest chat is
     /// not reopened: every start is a new conversation. Files from before there were accounts
     /// (`dj-memory.json` and the others) become the first account's, once.
-    pub fn set_account(&mut self, id: &str) {
+    ///
+    /// Returns whether it replaced another account. That account's conversation, child and
+    /// waiting approvals go first (`shutdown`), so nothing of theirs runs under this one; the same
+    /// account signing in again keeps everything.
+    pub fn set_account(&mut self, id: &str) -> bool {
         if self.account.as_deref() == Some(id) {
-            return;
+            return false;
         }
         let Some((dir, files)) = self.dir.clone() else {
-            return;
+            return false;
         };
+        let replaced = self.account.is_some();
+        if replaced {
+            self.shutdown();
+        }
         // Spotify's ids are plain letters and digits; anything else cannot reach a file name
         let tag: String = id
             .chars()
@@ -261,6 +269,7 @@ impl Dj {
         self.chats = Chats::open(file("dj-chats"));
         self.chat_id = self.chats.next_id();
         self.account = Some(id.to_string());
+        replaced
     }
 
     /// The saved chats, newest first.
