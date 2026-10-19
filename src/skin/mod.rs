@@ -11,7 +11,7 @@ pub mod layout;
 pub mod sprites;
 pub mod zip;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
@@ -129,16 +129,18 @@ impl Skin {
             other => SkinError::Archive(other),
         })?;
         let mut files = Files::new();
+        let mut tried = HashSet::new();
         let mut total = 0;
-        // Walking backwards and keeping the first copy read is the same as
-        // the last copy winning, but inflates each name once: a crafted
-        // archive can point thousands of entries at one large stream.
+        // Walking backwards and keeping the first copy is the same as the
+        // last copy winning, but inflates each name once, whether or not it
+        // reads: a crafted archive can point thousands of entries at one
+        // large stream that fails only once it is inflated.
         for entry in archive.entries().iter().rev() {
             if entry.is_dir() {
                 continue;
             }
             let file_name = entry.file_name();
-            if !wanted(&file_name) || files.contains_key(&file_name) {
+            if !wanted(&file_name) || !tried.insert(file_name.clone()) {
                 continue;
             }
             match archive.read(entry) {
@@ -162,6 +164,7 @@ impl Skin {
     /// The nearest copy wins; equal-depth paths are read in name order.
     pub fn from_dir(name: impl Into<String>, dir: &Path) -> Result<Self, SkinError> {
         let mut files = Files::new();
+        let mut total = 0;
         let mut folders = VecDeque::from([(dir.to_path_buf(), 0)]);
         while let Some((folder, depth)) = folders.pop_front() {
             let mut entries = std::fs::read_dir(folder)?.collect::<Result<Vec<_>, _>>()?;
@@ -174,7 +177,10 @@ impl Skin {
                     let file_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
                     if wanted(&file_name) && !files.contains_key(&file_name) {
                         check_size(&entry.path(), entry.metadata()?.len())?;
-                        files.insert(file_name, std::fs::read(entry.path())?);
+                        let bytes = std::fs::read(entry.path())?;
+                        total += bytes.len();
+                        check_size(&entry.path(), total as u64)?;
+                        files.insert(file_name, bytes);
                     }
                 }
             }
@@ -446,6 +452,26 @@ mod tests {
     }
 
     #[test]
+    fn a_name_whose_last_copy_cannot_be_read_is_not_tried_again() {
+        let mut archive = zip::write(&[
+            ("main.bmp", &png(275, 116, [10, 0, 0]), false),
+            ("main.bmp", &png(275, 116, [0, 20, 0]), false),
+        ]);
+        // Mark the last copy encrypted in the central directory.
+        let end = archive.len() - 22;
+        let directory =
+            u32::from_le_bytes(archive[end + 16..end + 20].try_into().unwrap()) as usize;
+        let last = directory + 46 + "main.bmp".len();
+        archive[last + 8] |= 1;
+
+        // The earlier copy is not read in its place, so nothing is left.
+        assert!(matches!(
+            Skin::from_archive("unreadable", &archive),
+            Err(SkinError::Empty)
+        ));
+    }
+
+    #[test]
     fn a_skin_that_inflates_past_the_limit_is_refused() {
         let zeros = vec![0u8; 6 << 20];
         let names = [
@@ -591,6 +617,22 @@ mod tests {
         let skin = Skin::load(&dir).unwrap();
         assert_eq!(skin.sheet(Sheet::Main).pixel(1, 1), Some([4, 5, 6, 255]));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unpacked_skin_larger_than_the_limit_is_refused() {
+        let dir = std::env::temp_dir().join(format!("spotifast-skin-total-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let large = vec![0u8; SKIN_LIMIT / 4 + 1];
+        for stem in ["main", "cbuttons", "titlebar", "posbar"] {
+            std::fs::write(dir.join(format!("{stem}.bmp")), &large).unwrap();
+        }
+        let result = Skin::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(matches!(
+            result,
+            Err(SkinError::Archive(zip::ZipError::TooLarge(_)))
+        ));
     }
 
     #[cfg(unix)]
