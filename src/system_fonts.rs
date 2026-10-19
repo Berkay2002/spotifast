@@ -5,7 +5,7 @@
 //! for one family by name.
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Once, OnceLock};
 
 use skrifa::MetadataProvider as _;
 
@@ -24,11 +24,30 @@ const FONT_SCAN_DEPTH: usize = 4;
 /// can say billions. No real one holds more than a few dozen.
 const MAX_FACES: u32 = 64;
 
+static FACE: OnceLock<Option<PlaylistFace>> = OnceLock::new();
+
+/// Starts [`pledit_face`]'s search on a thread of its own, once: it opens
+/// every installed font, too slow for a frame.
+pub fn warm_up() {
+    static STARTED: Once = Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(pledit_face);
+    });
+}
+
+/// [`pledit_face`] without waiting for it: `None` while the search runs,
+/// which this starts if nothing has.
+pub fn pledit_face_ready() -> Option<Option<&'static PlaylistFace>> {
+    if FACE.get().is_none() {
+        warm_up();
+    }
+    FACE.get().map(Option::as_ref)
+}
+
 /// The face Winamp's playlists were drawn in, or the nearest this desktop
 /// carries: Arial, then the metric twins that stand in for it on Linux,
 /// then a plain sans. `None` leaves it to the interface font.
 pub fn pledit_face() -> Option<&'static PlaylistFace> {
-    static FACE: OnceLock<Option<PlaylistFace>> = OnceLock::new();
     FACE.get_or_init(|| {
         find_family(&[
             "arial",
@@ -149,5 +168,12 @@ mod tests {
     fn asking_the_system_never_panics() {
         // Whatever fonts this machine has, including none.
         let _ = pledit_face();
+    }
+
+    #[test]
+    fn the_face_is_ready_once_the_search_ends() {
+        let face = pledit_face().map(|face| face as *const PlaylistFace);
+        let ready = pledit_face_ready().map(|face| face.map(|face| face as *const PlaylistFace));
+        assert_eq!(ready, Some(face));
     }
 }

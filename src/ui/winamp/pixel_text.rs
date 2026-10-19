@@ -4,7 +4,7 @@
 //! no anti-aliasing, then cached and nearest-neighbor scaled with the skin.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::time::Duration;
 
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions};
 use skrifa::MetadataProvider as _;
@@ -30,9 +30,13 @@ pub struct Line {
 }
 
 /// Font fallback order: Arial or a system equivalent, Inter, emoji, then
-/// system script fallbacks. This mirrors Windows font linking.
-static FACES: LazyLock<Vec<(&'static [u8], u32)>> = LazyLock::new(|| {
-    let mut faces: Vec<(&'static [u8], u32)> = match crate::system_fonts::pledit_face() {
+/// system script fallbacks. This mirrors Windows font linking. `primary` is
+/// `None` while the system face is still being looked for, or when there is
+/// none, and Inter stands in.
+fn face_list(
+    primary: Option<&'static crate::system_fonts::PlaylistFace>,
+) -> Vec<(&'static [u8], u32)> {
+    let mut faces: Vec<(&'static [u8], u32)> = match primary {
         Some(face) => vec![(&face.bytes, face.index)],
         None => vec![(fastframe_fonts::INTER, 0)],
     };
@@ -41,7 +45,7 @@ static FACES: LazyLock<Vec<(&'static [u8], u32)>> = LazyLock::new(|| {
         faces.push((fallback.bytes, fallback.index));
     }
     faces
-});
+}
 
 /// A face opened for drawing, with its hinting programme at the size.
 struct Face {
@@ -54,6 +58,9 @@ struct Face {
 pub struct PixelText {
     lines: HashMap<String, Line>,
     faces: Vec<Face>,
+    /// The faces stand in for a system face still being looked for, and
+    /// are swapped, with every line drawn in them, once it is found.
+    provisional: bool,
 }
 
 impl PixelText {
@@ -63,10 +70,16 @@ impl PixelText {
     }
 
     fn faces(&mut self) -> &[Face] {
+        let ready = crate::system_fonts::pledit_face_ready();
+        if self.provisional && ready.is_some() {
+            self.faces.clear();
+            self.lines.clear();
+        }
         if self.faces.is_empty() {
+            self.provisional = ready.is_none();
             let size = Size::new(SIZE_PX as f32);
-            for (bytes, index) in FACES.iter() {
-                let Ok(font) = skrifa::FontRef::from_index(bytes, *index) else {
+            for (bytes, index) in face_list(ready.flatten()) {
+                let Ok(font) = skrifa::FontRef::from_index(bytes, index) else {
                     continue;
                 };
                 let hinting = HintingInstance::new(
@@ -123,6 +136,11 @@ impl PixelText {
 
     /// A line, drawn now if it has not been.
     pub fn line(&mut self, ctx: &egui::Context, text: &str) -> &Line {
+        let _ = self.faces();
+        if self.provisional {
+            // Look again soon, so a playlist left alone still swaps.
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         if self.lines.len() >= CACHE_LIMIT {
             self.lines.clear();
         }
@@ -309,6 +327,8 @@ mod tests {
 
     #[test]
     fn a_script_the_face_lacks_comes_from_a_borrowed_face() {
+        // The same faces for every measurement.
+        let _ = crate::system_fonts::pledit_face();
         let mut text = PixelText::default();
         let character = '\u{591c}';
         let question = text.rasterise("?").size[0];
@@ -330,6 +350,8 @@ mod tests {
 
     #[test]
     fn width_grows_with_the_text_and_matches_the_drawing_roughly() {
+        // The same faces for every measurement.
+        let _ = crate::system_fonts::pledit_face();
         let mut text = PixelText::default();
         let short = text.width("Otomo");
         let long = text.width("Khruangbin - Otomo");
@@ -339,6 +361,20 @@ mod tests {
             (drawn - long).abs() <= long * 0.15,
             "drawn {drawn}, measured {long}"
         );
+    }
+
+    #[test]
+    fn lines_drawn_while_the_face_was_looked_for_are_redrawn_once_it_is_found() {
+        let _ = crate::system_fonts::pledit_face();
+        let ctx = egui::Context::default();
+        let mut text = PixelText::default();
+        text.line(&ctx, "Otomo");
+        assert!(!text.provisional);
+        // As if the first line had been drawn before the search ended.
+        text.provisional = true;
+        text.line(&ctx, "Khruangbin");
+        assert!(!text.provisional);
+        assert_eq!(text.lines.keys().collect::<Vec<_>>(), ["Khruangbin"]);
     }
 
     #[test]

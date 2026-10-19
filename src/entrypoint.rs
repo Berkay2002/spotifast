@@ -507,6 +507,13 @@ pub(crate) fn run() -> eframe::Result<()> {
     spotifast::emoji::install(demo);
     #[cfg(not(feature = "demo"))]
     spotifast::emoji::install(false);
+    // The Winamp playlist's face: looked for off this thread, and before a
+    // demo capture's first frame so it never shows the stand-in.
+    #[cfg(feature = "demo")]
+    if demo {
+        let _ = spotifast::system_fonts::pledit_face();
+    }
+    spotifast::system_fonts::warm_up();
     // macOS delivers links as Apple Events; install before the event loop.
     #[cfg(target_os = "macos")]
     if let Some(guard) = &instance {
