@@ -205,7 +205,9 @@ pub fn candidates(
     } else {
         &["claude"]
     };
-    for dir in path {
+    // a relative or empty PATH entry would be measured from Spotifast's working directory, where
+    // anything could sit (a Downloads folder, a folder opened by a file association)
+    for dir in path.iter().filter(|d| d.is_absolute()) {
         for n in names {
             v.push(dir.join(n));
         }
@@ -462,14 +464,21 @@ mod tests {
 
     #[test]
     fn candidates_come_in_the_order_override_path_home_npm() {
+        let bin = PathBuf::from(if cfg!(windows) { "C:/bin" } else { "/usr/bin" });
         let c = candidates(
             Some(Path::new("D:/mine/claude.exe")),
-            &[PathBuf::from("C:/bin")],
+            &[
+                PathBuf::new(),
+                PathBuf::from("."),
+                PathBuf::from("bin"),
+                bin.clone(),
+            ],
             Some(Path::new("C:/Users/a")),
             Some(Path::new("C:/Users/a/AppData/Roaming")),
         );
         assert_eq!(c[0], Path::new("D:/mine/claude.exe"));
-        assert!(c[1].starts_with("C:/bin"));
+        // relative and empty PATH entries are skipped: they would resolve against the working dir
+        assert!(c[1].starts_with(&bin), "{c:?}");
         assert!(c.iter().any(|p| p.ends_with(".local/bin/claude.exe")
             || p.ends_with(".local\\bin\\claude.exe")
             || p.ends_with(".local/bin/claude")));
