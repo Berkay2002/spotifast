@@ -43,7 +43,9 @@ Spotifast connects only to the services below.
 - **Spotify.** Sign-in, your library, search, playlists, playback and Spotify
   Connect all go to Spotify, under your account. Spotify's own
   [privacy policy](https://www.spotify.com/legal/privacy-policy/) applies to
-  that data. Home's **Made for you** request sends an already verified Web API
+  that data. While a song plays, the next few in the queue are downloaded
+  ahead into the audio cache, within a budget and never on a metered
+  connection; see [How it connects](/how-it-connects/). Home's **Made for you** request sends an already verified Web API
   access token to Spotify's Home service as well as the playback session's
   Login5 bearer and client token. The resulting cards are cached in memory
   for ten minutes and saved in the account-scoped Home cache for the next

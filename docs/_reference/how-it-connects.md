@@ -166,6 +166,11 @@ current-track pickup.
   Version 0.7.1 still uses the older unencrypted files.
   See [migration, sign-out, and storage protection](/settings-and-files/).
 - Downloaded audio, in the cache directory, within the budget you set.
+- While a song plays here, the next one to three songs in the queue are
+  downloaded ahead into that audio cache, so they start without waiting.
+  Songs over seven minutes are skipped, and the background downloads share
+  a budget of 100 MB per 30 minutes (a quarter of the cache limit, when that
+  is smaller). Nothing is fetched ahead when the audio cache is off.
 - Artwork, in the same cache directory, in its own folder capped at 512 MiB:
   at launch, the least recently used covers above the cap are removed.
 - The first time MilkDrop opens with an empty preset folder, the two projectM
@@ -189,8 +194,8 @@ current-track pickup.
   api.github.com once a day for updates. You can turn off automatic checks in
   Settings, or request one there at any time. On macOS, **Check for Updates**
   is also in the application menu. On a connection the system reports as
-  metered (Windows), the daily check, automatic downloads, and the large cover
-  the media controls show wait for one that is not; a check by hand still
+  metered (Windows), the daily check, automatic downloads, songs fetched
+  ahead, and the large cover the media controls show wait for one that is not; a check by hand still
   runs. On macOS, the daily check and automatic downloads also wait while the
   system reports no internet connection.
 
